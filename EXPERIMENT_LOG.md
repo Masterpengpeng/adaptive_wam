@@ -1064,6 +1064,13 @@ Interim setup result (2026-09-13):
 The core CUDA software environment is viable. Baseline evaluation must not start until a
 non-semantic offload/sharding plan or a larger-memory GPU is verified. This setup result is
 not a baseline success-rate reproduction.
+
+Static feasibility audit:
+- No configuration-only single-2080-Ti path exists.
+- MoT alone is approximately 11.214 GiB BF16, exceeding the 10.568 GiB device capacity.
+- The untouched official path has approximately 23.11 GiB of resident weights before runtime memory.
+- A semantics-preserving multi-GPU adaptation is technically feasible but changes device placement
+  and therefore requires an explicit project decision plus numerical-parity validation.
 ```
 
 ---
@@ -1360,3 +1367,12 @@ Next:
 - No FastWAM/LIBERO installation and no model/checkpoint download was performed.
 - Model evaluation remains blocked by the official single-device memory path.
 - Evidence: `notes/fastwam_cuda_smoke_2026-09-13.md`.
+
+### Multi-GPU feasibility audit
+
+- No config-only solution was found for 11 GiB devices.
+- Recommended local adaptation: prompt-cache and two-GPU T5 pre-encoding/offload, video expert on GPU 0, action expert plus VAE on GPU 1, and explicit KV transfer.
+- First correctness run must disable compiled/CUDA-graph inference.
+- The preferred reproduction path remains an untouched baseline on a GPU with at least 24–32 GiB VRAM.
+- No third-party code has been modified pending this decision.
+- Evidence: `notes/fastwam_multigpu_feasibility_2026-09-13.md`.

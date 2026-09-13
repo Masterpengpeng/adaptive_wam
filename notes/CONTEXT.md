@@ -1,7 +1,7 @@
 # Research Context
 
-> Updated: 2026-09-13 12:37 +08:00
-> Evidence through: isolated core-environment installation and 10-GPU dtype smoke-test report
+> Updated: 2026-09-13 12:46 +08:00
+> Evidence through: multi-GPU feasibility audit
 > Canonical record: [`../EXPERIMENT_LOG.md`](../EXPERIMENT_LOG.md)
 
 This file is a replaceable current-state snapshot for quickly resuming work. Formal
@@ -10,11 +10,11 @@ by the main agent.
 
 ## Now
 
-- Stage: isolated core environment validated; offload/sharding feasibility study
+- Stage: multi-GPU feasibility audited; hardware-adaptation decision
 - Active experiment: none (`EXP-B000` has not started)
-- Objective: find a semantics-preserving way to evaluate the model within available GPU memory
-- Status: core environment GO; model evaluation NO-GO on a single 11 GiB GPU
-- Owner: `experiment_runner`
+- Objective: choose the official larger-GPU path or authorize a separate multi-GPU adaptation branch
+- Status: awaiting hardware-adaptation decision
+- Owner: main agent
 
 ## Fixed / Do Not Change
 
@@ -29,6 +29,8 @@ by the main agent.
   independent axis until that coupling is resolved
 - `W`: unsupported by the audited baseline
 - Do not change more than one supported axis in an experiment
+- There is no configuration-only solution for official evaluation on the available 11 GiB GPUs
+- Keep `compile=false` for the proposed multi-GPU path
 - Do not use or repair the base Python environment for this project
 - Use `PYTHONNOUSERSITE=1` and keep package/model caches inside the project
 - Do not overwrite outputs; before long runs, report GPU count, exact command, and output path
@@ -48,19 +50,23 @@ by the main agent.
   per dtype and per GPU peak allocated memory was 8,564,736 B and peak reserved memory was
   23,068,672 B
 - Storage: environment plus project-local caches use 8.00 GiB; 46.58 GiB remains free
+- Audited BF16 component sizes: MoT has 6,020,710,599 parameters (approximately 11.214 GiB),
+  T5 is approximately 10.582 GiB, and VAE is approximately 1.313 GiB
 - Evaluation entry points: manager at `experiments/libero/run_libero_manager.py`, which
   dispatches single evaluation through `experiments/libero/eval_libero_single.py`
 - Latest validation: no-weight FP16/BF16 smoke test across all 10 GPUs; no model evaluation
 - Latest experiment output: none
-- Result: core environment is GO; checkpoint-backed model evaluation has not run and remains
-  NO-GO because official single-device loading exceeds per-GPU memory
+- Result: core environment is GO, but checkpoint-backed model evaluation has not run. The
+  official single-device path is NO-GO and the audit found no configuration-only solution;
+  a larger GPU or a code-level multi-GPU placement adaptation is required
 
 ## Open Issues
 
 - [x] Determine checkpoint location, size, checksum/version, and access requirements using metadata only.
 - [x] Determine the size of automatically downloaded VAE, T5, and tokenizer assets without downloading them.
-- [ ] Resolve the single-device GPU-memory blocker before downloading model assets.
-- [ ] Verify whether offload or sharding can preserve official algorithm and evaluation semantics.
+- [x] Audit offload/sharding feasibility and confirm that no configuration-only solution exists.
+- [ ] Choose option A (official path on a GPU with at least 24/32 GB) or authorize option B
+      (multi-GPU non-algorithm patch on a separate baseline branch).
 - [ ] Recompute disk requirements for the selected offload/sharding path before further installs.
 - [ ] Resolve the `num_frames` / `action_horizon` coupling before designing an `H` sweep.
 - [ ] Characterize variant-dependent `num_inference_steps` compute before designing a `D` sweep.
@@ -84,17 +90,24 @@ by the main agent.
 - The isolated core environment at `.conda/fastwam` is a GO: dependency consistency is clean,
   and both tested dtypes produced finite results on every GPU. This does not clear the model
   evaluation memory blocker.
+- Preferred multi-GPU adaptation, if authorized: keep `compile=false`; cache task prompts;
+  pre-encode T5 across two GPUs and then offload it to CPU; place the video expert on GPU 0 and
+  action expert plus VAE on GPU 1. The audited KV transfer is approximately 34 MiB.
+- If the video GPU lacks working-memory headroom, use paired-layer sharding of the video expert
+  across two GPUs. Sequential offload is a fallback only.
+- Accelerate device-map/FSDP paths are not recommended for this inference architecture.
 - Keep following `DEC-001` through `DEC-003`: Oracle before Controller, one axis at a time,
   and public-checkpoint inference/evaluation before large-model training.
 
 ## Next Exact Action
 
-1. Inspect semantics-preserving offload and sharding options for the pinned baseline without
-   changing the model algorithm or downloading weights.
-2. Estimate device placement, per-device memory, host-memory, and any additional disk/cache
-   requirements for viable options.
-3. Recompute available disk headroom against the chosen path.
-4. Only after both reviews pass, install the remaining dependencies and download required weights.
+1. Choose one path:
+   - **A — Official path:** use a GPU with at least 24/32 GB memory and preserve the official
+     single-device evaluation path.
+   - **B — Adapted path:** explicitly authorize a separate baseline branch for a multi-GPU,
+     non-algorithm placement patch using the audited design above.
+2. After the choice, recompute memory and disk headroom for that exact path.
+3. Only then install the remaining dependencies and download required weights.
 
 ## Recent Evidence
 
@@ -121,5 +134,14 @@ by the main agent.
 - `2026-09-13 12:37 +08:00` — `experiment_runner` storage report — environment plus caches
   uses 8.00 GiB and 46.58 GiB remains; core environment is GO, while model evaluation remains
   NO-GO due to single-GPU memory.
+- `2026-09-13 12:46 +08:00` — `experiment_runner` multi-GPU feasibility audit — no
+  configuration-only solution exists. BF16 sizes are approximately 11.214 GiB for the
+  6,020,710,599-parameter MoT, 10.582 GiB for T5, and 1.313 GiB for VAE.
+- `2026-09-13 12:46 +08:00` — `experiment_runner` multi-GPU feasibility audit — recommended
+  adaptation is `compile=false`, task-prompt caching, two-GPU T5 pre-encoding followed by CPU
+  offload, video expert on GPU 0, and action expert plus VAE on GPU 1, with approximately
+  34 MiB KV transfer; paired-layer video sharding is the low-headroom alternative.
+- `2026-09-13 12:46 +08:00` — `experiment_runner` multi-GPU feasibility audit — sequential
+  offload is fallback-only; Accelerate device-map and FSDP are not recommended.
 - `2026-09-13` — `notes/environment_2026-09-13.md` — base PyTorch import fails and the
   workspace filesystem had approximately 55 GiB free.
