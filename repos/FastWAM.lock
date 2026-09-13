@@ -1,0 +1,9 @@
+name=FastWAM
+remote=https://github.com/yuantianyuan01/FastWAM.git
+branch=main
+commit=7faa71108368fbb3b6885649f112af607427a2d4
+commit_subject=Optimize IDM action-only inference
+license=MIT
+cloned_at=2026-09-13T12:14:00+08:00
+worktree_size=11MiB
+

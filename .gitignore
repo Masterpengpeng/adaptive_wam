@@ -10,11 +10,17 @@ outputs/*
 logs/*
 !logs/.gitkeep
 
+# Third-party repositories are pinned by adjacent lock files
+repos/*
+!repos/.gitkeep
+!repos/*.lock
+
 # Python
 __pycache__/
 *.py[cod]
 .venv/
 venv/
+.conda/
 
 # IDE
 .vscode/
@@ -23,4 +29,3 @@ venv/
 # Miscellaneous
 *.log
 .DS_Store
-

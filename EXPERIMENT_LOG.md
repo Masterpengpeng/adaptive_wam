@@ -1201,10 +1201,10 @@ Oracle Study 和轻量 Controller，但不适合照搬大型 WAM 的高显存训
 - [x] 创建标准目录
 - [x] 初始化 Git
 - [x] 记录服务器环境
-- [ ] 获取 baseline repo
-- [ ] 阅读 README 和 evaluation 入口
-- [ ] 确认 checkpoint 获取方式
-- [ ] 找出 H / D / W / E 的实际代码映射
+- [x] 获取 baseline repo
+- [x] 阅读 README 和 evaluation 入口
+- [x] 确认 checkpoint 获取方式
+- [x] 找出 H / D / W / E 的实际代码映射
 
 ## P1 — Baseline
 
@@ -1331,3 +1331,14 @@ Next:
 ### Next
 
 确认并固定 Fast-WAM / JointWAM 官方 baseline 仓库，阅读 README、evaluation 入口和 checkpoint 获取流程。
+
+### Baseline acquisition and code audit
+
+- Official repository cloned at `repos/FastWAM` and pinned to `7faa71108368fbb3b6885649f112af607427a2d4`.
+- Evaluation entry points and inference paths were inspected without changing code.
+- `E = EVALUATION.replan_steps` and `D = EVALUATION.num_inference_steps` are confirmed.
+- H is derived from video-frame configuration but currently coupled to the default action horizon.
+- W has no native multi-rollout implementation.
+- Base-only assets require 23.129 GiB; the safe local peak budget is approximately 51.1 GiB against 54.58 GiB free.
+- Official single-device loading is a GPU-memory blocker on 11 GiB RTX 2080 Ti hardware.
+- Evidence: `notes/fastwam_baseline_audit_2026-09-13.md` and `notes/fastwam_asset_budget_2026-09-13.md`.
