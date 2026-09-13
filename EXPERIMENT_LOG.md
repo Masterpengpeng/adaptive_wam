@@ -1037,7 +1037,7 @@ GPU、驱动、CUDA 编译器和系统工具链可用，可以进入 baseline �
 
 ## EXP-B000 — Baseline Reproduction
 
-**状态：未开始**
+**状态：准备中（核心 CUDA 环境通过；模型加载受显存阻塞）**
 
 ### Goal
 
@@ -1048,13 +1048,22 @@ GPU、驱动、CUDA 编译器和系统工具链可用，可以进入 baseline �
 ### Result
 
 ```text
-待填写。
+Interim setup result (2026-09-13):
+- FastWAM pinned at 7faa71108368fbb3b6885649f112af607427a2d4.
+- Isolated Python 3.10.21 environment created at .conda/fastwam.
+- torch 2.7.1+cu128 and torchvision 0.22.1+cu128 import successfully.
+- 10/10 RTX 2080 Ti devices visible on the host.
+- FP16/BF16 64x64 matmul: 20/20 finite.
+- FastWAM/LIBERO packages and model assets are not installed/downloaded yet.
+- Official single-device model loading remains a VRAM blocker.
 ```
 
 ### Conclusion
 
 ```text
-待填写。
+The core CUDA software environment is viable. Baseline evaluation must not start until a
+non-semantic offload/sharding plan or a larger-memory GPU is verified. This setup result is
+not a baseline success-rate reproduction.
 ```
 
 ---
@@ -1342,3 +1351,12 @@ Next:
 - Base-only assets require 23.129 GiB; the safe local peak budget is approximately 51.1 GiB against 54.58 GiB free.
 - Official single-device loading is a GPU-memory blocker on 11 GiB RTX 2080 Ti hardware.
 - Evidence: `notes/fastwam_baseline_audit_2026-09-13.md` and `notes/fastwam_asset_budget_2026-09-13.md`.
+
+### Core CUDA environment smoke
+
+- Environment: `.conda/fastwam`, Python 3.10.21, torch 2.7.1+cu128, torchvision 0.22.1+cu128.
+- All 10 RTX 2080 Ti GPUs passed FP16 and BF16 matrix-multiply smoke tests.
+- Environment and project-local caches consumed approximately 8.00 GiB; 46.58 GiB remains.
+- No FastWAM/LIBERO installation and no model/checkpoint download was performed.
+- Model evaluation remains blocked by the official single-device memory path.
+- Evidence: `notes/fastwam_cuda_smoke_2026-09-13.md`.
