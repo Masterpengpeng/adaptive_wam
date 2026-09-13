@@ -998,7 +998,7 @@ Episode Count:
 ```text
 日期：2026-09-13
 负责人：Codex
-Git Commit：TO_BE_FILLED_AFTER_INITIAL_COMMIT
+Git Commit：7594e3f2797c92358e60fdb935f133397a7aead0
 
 项目目录：/home/lab416/ZP_projects/adaptive_wam
 目录结构：已创建
@@ -1326,7 +1326,7 @@ Next:
 
 ### Git
 
-初始化提交：`TO_BE_FILLED_AFTER_INITIAL_COMMIT`
+初始化提交：`7594e3f2797c92358e60fdb935f133397a7aead0`
 
 ### Next
 
