@@ -1,0 +1,26 @@
+# Checkpoints and datasets
+checkpoints/*
+!checkpoints/.gitkeep
+data/*
+!data/.gitkeep
+
+# Experiment outputs and runtime logs
+outputs/*
+!outputs/.gitkeep
+logs/*
+!logs/.gitkeep
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# IDE
+.vscode/
+.idea/
+
+# Miscellaneous
+*.log
+.DS_Store
+
