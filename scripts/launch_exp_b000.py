@@ -84,6 +84,8 @@ def validate_demo_config(config: dict[str, Any]) -> None:
     }
     if logical != expected_logical:
         raise ValueError(f"Logical placement must be {expected_logical!r}.")
+    if config.get("model", {}).get("redirect_common_files") is not False:
+        raise ValueError("model.redirect_common_files must be false for official HF assets.")
     validate_gpu_groups(
         placement["physical_gpu_groups"], int(config["manager"]["num_gpus"])
     )
@@ -211,7 +213,7 @@ def build_manager_command(
     placement = config["placement"]
     logical = placement["logical_devices"]
     output_dir = (
-        PROJECT_ROOT / "outputs/EXP-B000/compose_check"
+        PROJECT_ROOT / "outputs/baseline/EXP-B000/compose_check"
         if compose_only
         else resolve_project_path(config["paths"]["output_dir"])
     )
@@ -230,6 +232,7 @@ def build_manager_command(
         f"mixed_precision={evaluation['mixed_precision']}",
         "model.load_text_encoder=true",
         "model.skip_dit_load_from_pretrain=true",
+        "model.redirect_common_files=false",
         f"EVALUATION.task_suite_name={evaluation['task_suite']}",
         f"EVALUATION.task_id={evaluation['task_id']}",
         f"EVALUATION.dataset_stats_path={statistics}",

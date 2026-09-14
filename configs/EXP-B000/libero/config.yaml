@@ -1,5 +1,5 @@
 benchmark_root: /home/lab416/ZP_projects/adaptive_wam/repos/LIBERO/libero/libero
 bddl_files: /home/lab416/ZP_projects/adaptive_wam/repos/LIBERO/libero/libero/bddl_files
 init_states: /home/lab416/ZP_projects/adaptive_wam/repos/LIBERO/libero/libero/init_files
-datasets: /home/lab416/ZP_projects/adaptive_wam/outputs/EXP-B000/no_demonstrations
+datasets: /home/lab416/ZP_projects/adaptive_wam/outputs/baseline/EXP-B000/no_demonstrations
 assets: /home/lab416/ZP_projects/adaptive_wam/repos/LIBERO/libero/libero/assets

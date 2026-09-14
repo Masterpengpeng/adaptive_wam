@@ -26,7 +26,7 @@ class ExpB000LauncherTest(unittest.TestCase):
         manifest = load_manifest(self.config)
         files = list(iter_manifest_files(manifest))
         self.assertEqual(len(manifest["asset_classes"]), 4)
-        self.assertEqual(sum(entry["size"] for _, entry in files), 24834476744)
+        self.assertEqual(sum(entry["size"] for _, entry in files), 26243989748)
         joined = " ".join(entry["remote_path"].lower() for _, entry in files)
         self.assertNotIn("optional", joined)
         self.assertNotIn("demonstration", joined)
@@ -54,6 +54,11 @@ class ExpB000LauncherTest(unittest.TestCase):
         self.assertIn("EVALUATION.compile_action_infer=false", command)
         self.assertIn("EVALUATION.visualize_future_video=false", command)
         self.assertIn("EVALUATION.text_encoder_devices=[cuda:2,cuda:3]", command)
+        self.assertIn("model.redirect_common_files=false", command)
+        self.assertIn(
+            "EVALUATION.output_dir=/home/lab416/ZP_projects/adaptive_wam/outputs/baseline/EXP-B000",
+            command,
+        )
         self.assertEqual(environment["CUDA_VISIBLE_DEVICES"], "0,1,2,3")
         self.assertEqual(environment["DIFFSYNTH_SKIP_DOWNLOAD"], "true")
         self.assertTrue(environment["PYTHONNOUSERSITE"] == "1")
