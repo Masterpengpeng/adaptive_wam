@@ -1,0 +1,10 @@
+name=LIBERO
+remote=https://github.com/Lifelong-Robot-Learning/LIBERO.git
+branch=master
+commit=8f1084e3132a39270c3a13ebe37270a43ece2a01
+license=MIT
+cloned_at=2026-09-13
+worktree_size=743MiB
+installation=editable-without-dependencies
+runtime_note=Use explicit PYTHONPATH because the upstream editable package does not expose the libero namespace with the current setuptools environment.
+

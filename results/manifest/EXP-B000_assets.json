@@ -1,0 +1,96 @@
+{
+  "schema_version": 1,
+  "experiment_id": "EXP-B000",
+  "policy": "base-only; Optional-IDM and demonstration assets are prohibited",
+  "total_bytes": 24834476744,
+  "asset_classes": [
+    {
+      "id": "fastwam_base_checkpoint",
+      "source": "huggingface",
+      "repository": "yuanty/fastwam",
+      "revision": "8eaceeb24c3cc92ff2a9c9a9d266a4941b836705",
+      "files": [
+        {
+          "remote_path": "libero_uncond_2cam224.pt",
+          "local_path": "checkpoints/fastwam_release/libero_uncond_2cam224.pt",
+          "size": 12041735140,
+          "hash_type": "sha256",
+          "hash": "1000437cfcf55c000094f79a2600634c502bcb5b492476b94bf8509883a49579"
+        }
+      ]
+    },
+    {
+      "id": "matching_dataset_statistics",
+      "source": "huggingface",
+      "repository": "yuanty/fastwam",
+      "revision": "8eaceeb24c3cc92ff2a9c9a9d266a4941b836705",
+      "files": [
+        {
+          "remote_path": "libero_uncond_2cam224_dataset_stats.json",
+          "local_path": "checkpoints/fastwam_release/libero_uncond_2cam224_dataset_stats.json",
+          "size": 40939,
+          "hash_type": "git_blob_sha1",
+          "hash": "e8ff7341ad86b9750dc1fbc26250da8c2c05f1a2"
+        }
+      ]
+    },
+    {
+      "id": "wan_runtime_weights",
+      "source": "modelscope",
+      "repository": "DiffSynth-Studio/Wan-Series-Converted-Safetensors",
+      "revision": "150f75d811d51f6c7760154aa7fec371dccda529",
+      "files": [
+        {
+          "remote_path": "models_t5_umt5-xxl-enc-bf16.safetensors",
+          "local_path": "checkpoints/diffsynth/DiffSynth-Studio/Wan-Series-Converted-Safetensors/models_t5_umt5-xxl-enc-bf16.safetensors",
+          "size": 11361845432,
+          "hash_type": "sha256",
+          "hash": "d92de679881d38af9c89eff7bb1b6d6c9d96cb2b69831e4027e9ecabdd38eb23"
+        },
+        {
+          "remote_path": "Wan2.2_VAE.safetensors",
+          "local_path": "checkpoints/diffsynth/DiffSynth-Studio/Wan-Series-Converted-Safetensors/Wan2.2_VAE.safetensors",
+          "size": 1409401152,
+          "hash_type": "sha256",
+          "hash": "0e913a2ca571c75fcb63385a8edadcca73454af5842596cb1ad11e4142590996"
+        }
+      ]
+    },
+    {
+      "id": "umt5_tokenizer",
+      "source": "modelscope",
+      "repository": "Wan-AI/Wan2.1-T2V-1.3B",
+      "revision": "020b9e59db399efa534e408fb295b14a75700daf",
+      "files": [
+        {
+          "remote_path": "google/umt5-xxl/special_tokens_map.json",
+          "local_path": "checkpoints/diffsynth/Wan-AI/Wan2.1-T2V-1.3B/google/umt5-xxl/special_tokens_map.json",
+          "size": 6623,
+          "hash_type": "sha256",
+          "hash": "7b8a9f5040adb67b5805abdfd42c1f8d0f3d0e711f10726580eb3789cd0ad61d"
+        },
+        {
+          "remote_path": "google/umt5-xxl/spiece.model",
+          "local_path": "checkpoints/diffsynth/Wan-AI/Wan2.1-T2V-1.3B/google/umt5-xxl/spiece.model",
+          "size": 4548313,
+          "hash_type": "sha256",
+          "hash": "e3909a67b780650b35cf529ac782ad2b6b26e6d1f849d3fbb6a872905f452458"
+        },
+        {
+          "remote_path": "google/umt5-xxl/tokenizer.json",
+          "local_path": "checkpoints/diffsynth/Wan-AI/Wan2.1-T2V-1.3B/google/umt5-xxl/tokenizer.json",
+          "size": 16837417,
+          "hash_type": "sha256",
+          "hash": "6e197b4d3dbd71da14b4eb255f4fa91c9c1f2068b20a2de2472967ca3d22602b"
+        },
+        {
+          "remote_path": "google/umt5-xxl/tokenizer_config.json",
+          "local_path": "checkpoints/diffsynth/Wan-AI/Wan2.1-T2V-1.3B/google/umt5-xxl/tokenizer_config.json",
+          "size": 61728,
+          "hash_type": "sha256",
+          "hash": "ed9a3a8b0faa71a70a32847e0435fe036e6e112d4df4edb7bb48a921e344dc05"
+        }
+      ]
+    }
+  ]
+}

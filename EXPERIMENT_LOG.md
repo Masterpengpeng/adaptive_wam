@@ -1037,7 +1037,7 @@ GPU、驱动、CUDA 编译器和系统工具链可用，可以进入 baseline �
 
 ## EXP-B000 — Baseline Reproduction
 
-**状态：准备中（核心 CUDA 环境通过；模型加载受显存阻塞）**
+**状态：进行中（软件与无模型 preflight 通过；base-only 资产待下载；尚无模型结果）**
 
 ### Goal
 
@@ -1048,14 +1048,23 @@ GPU、驱动、CUDA 编译器和系统工具链可用，可以进入 baseline �
 ### Result
 
 ```text
-Interim setup result (2026-09-13):
+Interim setup result (updated 2026-09-14):
 - FastWAM pinned at 7faa71108368fbb3b6885649f112af607427a2d4.
+- Multi-GPU adaptation branch exp/multigpu-placement contains commits f60e17c,
+  47baac4, and ead553d; the associated tests pass 20/20.
 - Isolated Python 3.10.21 environment created at .conda/fastwam.
 - torch 2.7.1+cu128 and torchvision 0.22.1+cu128 import successfully.
+- Core and FastWAM dependencies installed successfully.
 - 10/10 RTX 2080 Ti devices visible on the host.
 - FP16/BF16 64x64 matmul: 20/20 finite.
-- FastWAM/LIBERO packages and model assets are not installed/downloaded yet.
-- Official single-device model loading remains a VRAM blocker.
+- LIBERO pinned at 8f1084e. Do not install its legacy requirements; use the compatible
+  minimal stack with explicit PYTHONPATH.
+- The first editable-packaging import failed and the failure was preserved. The following
+  no-model EGL smoke passed: libero_spatial task 0, fixed initial state, one environment step,
+  two 64x64 renders, 6.49 s total.
+- Asset/launcher preflight passed: launcher tests 4/4 and compose-only PASS.
+- Approximately 45 GiB remains before downloading the audited 23.129 GiB base-only asset set.
+- No model asset has been loaded and no checkpoint-backed evaluation result exists yet.
 ```
 
 ### Conclusion
@@ -1071,6 +1080,22 @@ Static feasibility audit:
 - The untouched official path has approximately 23.11 GiB of resident weights before runtime memory.
 - A semantics-preserving multi-GPU adaptation is technically feasible but changes device placement
   and therefore requires an explicit project decision plus numerical-parity validation.
+
+Current gate result:
+- Option B was selected and the non-algorithm multi-GPU placement implementation passed its
+  20/20 structural/device tests.
+- The compatible LIBERO software path and no-model EGL rendering path pass.
+- These are software/preflight results only. They do not establish model correctness, success
+  rate, preserved performance, latency improvement, or efficiency improvement.
+```
+
+### Next
+
+```text
+1. Download and verify only the audited 23.129 GiB base-only assets; exclude optional IDM.
+2. Validate asset identity, size, and checksum before loading.
+3. Run one four-GPU trial through the tested launcher.
+4. Record outputs, peak memory, latency, errors, and exact artifact paths before expanding runs.
 ```
 
 ---
@@ -1376,3 +1401,22 @@ Next:
 - The preferred reproduction path remains an untouched baseline on a GPU with at least 24–32 GiB VRAM.
 - No third-party code has been modified pending this decision.
 - Evidence: `notes/fastwam_multigpu_feasibility_2026-09-13.md`.
+
+### EXP-B000 — Multi-GPU placement baseline start
+
+- Start: `2026-09-13 13:00:41 +08:00`
+- Authorization: user requested that experiments proceed and progress be recorded.
+- Selected path: option B, because this host has 10 × 11 GiB RTX 2080 Ti GPUs and no
+  24–32 GiB device is available for the untouched single-device path.
+- Baseline source commit: `7faa71108368fbb3b6885649f112af607427a2d4`.
+- Adaptation branch: `exp/multigpu-placement` in `repos/FastWAM`.
+- Scope boundary: device placement, cross-device tensor transfer, and task-level prompt
+  caching only; do not change weights, schedulers, masks, seeds, or inference equations.
+- Planned devices: video expert on `cuda:0`; action expert and VAE on `cuda:1`; text
+  encoder will be pre-encoded/offloaded or sharded only if required by measured memory.
+- Correctness mode: `compile_action_infer=false`.
+- First output root: `outputs/EXP-B000/`; existing outputs must not be overwritten.
+- Status: started; implementation and no-weight structural tests in progress. No checkpoint,
+  model asset, or LIBERO dataset has been downloaded yet.
+- Gates before model evaluation: static/unit tests, measured memory budget, required dependency
+  installation, asset download with checksums, one-replan smoke, then 1/10/100-replan leak checks.

@@ -1,7 +1,7 @@
 # Research Context
 
-> Updated: 2026-09-13 12:46 +08:00
-> Evidence through: multi-GPU feasibility audit
+> Updated: 2026-09-14 08:52 +08:00
+> Evidence through: multi-GPU implementation, dependency, EGL, and launcher preflight reports
 > Canonical record: [`../EXPERIMENT_LOG.md`](../EXPERIMENT_LOG.md)
 
 This file is a replaceable current-state snapshot for quickly resuming work. Formal
@@ -10,19 +10,24 @@ by the main agent.
 
 ## Now
 
-- Stage: multi-GPU feasibility audited; hardware-adaptation decision
-- Active experiment: none (`EXP-B000` has not started)
-- Objective: choose the official larger-GPU path or authorize a separate multi-GPU adaptation branch
-- Status: awaiting hardware-adaptation decision
-- Owner: main agent
+- Stage: base-only asset acquisition readiness
+- Active experiment: `EXP-B000`
+- Objective: download and verify the audited base-only assets, then run one four-GPU trial
+- Status: software and no-model preflight PASS; no model result yet
+- Owner: `experiment_runner`
 
 ## Fixed / Do Not Change
 
 - Baseline repo: `repos/FastWAM`
 - Origin: <https://github.com/yuantianyuan01/FastWAM.git>
 - Baseline commit: `7faa71108368fbb3b6885649f112af607427a2d4`
-- Checkpoint: TBD
+- Adaptation branch: `exp/multigpu-placement`
+- Adaptation commits: `f60e17c`, `47baac4`, `ead553d`
+- Checkpoint/assets: base-only set, 23.129 GiB; not yet downloaded or validated
 - Benchmark: LIBERO; tasks and seeds TBD
+- LIBERO commit: `8f1084e`
+- LIBERO environment policy: do not install its legacy `requirements.txt`; use the compatible
+  minimal stack and an explicit `PYTHONPATH`
 - `E`: `replan_steps`
 - `D`: `num_inference_steps`; compute behavior is variant-dependent and must be measured per variant
 - `H`: derived from `num_frames`, but coupled to `action_horizon`; do not sweep it as an
@@ -44,36 +49,44 @@ by the main agent.
 - Isolated prefix: `.conda/fastwam`
 - Validated core environment: Python 3.10.21, `torch 2.7.1+cu128`,
   `torchvision 0.22.1+cu128`, CUDA 12.8; `pip check` clean
+- Core and FastWAM dependencies: installed successfully
 - Isolation/cache policy: `PYTHONNOUSERSITE=1`; caches are configured inside the project
 - Hardware: 10 × RTX 2080 Ti (11,264 MiB each), compute capability 7.5
 - Dtype smoke test: FP16 and BF16 each produced finite results on all 10 GPUs (`20/20`);
   per dtype and per GPU peak allocated memory was 8,564,736 B and peak reserved memory was
   23,068,672 B
-- Storage: environment plus project-local caches use 8.00 GiB; 46.58 GiB remains free
+- Storage: approximately 45 GiB remains free before the base-only asset download
 - Audited BF16 component sizes: MoT has 6,020,710,599 parameters (approximately 11.214 GiB),
   T5 is approximately 10.582 GiB, and VAE is approximately 1.313 GiB
 - Evaluation entry points: manager at `experiments/libero/run_libero_manager.py`, which
   dispatches single evaluation through `experiments/libero/eval_libero_single.py`
-- Latest validation: no-weight FP16/BF16 smoke test across all 10 GPUs; no model evaluation
+- Multi-GPU tests: `20/20` PASS across commits `f60e17c`, `47baac4`, and `ead553d`
+- Latest simulation validation: no-model EGL smoke PASS on `libero_spatial` task 0 with fixed
+  initial state, one step, and two 64×64 renders; total time 6.49 s
+- Asset/launcher preflight: launcher tests `4/4` PASS; compose-only PASS
 - Latest experiment output: none
-- Result: core environment is GO, but checkpoint-backed model evaluation has not run. The
-  official single-device path is NO-GO and the audit found no configuration-only solution;
-  a larger GPU or a code-level multi-GPU placement adaptation is required
+- Result: implementation and software preflight are ready for asset acquisition. No checkpoint
+  has been loaded and no model evaluation result exists; performance preservation or efficiency
+  improvement must not be claimed
 
 ## Open Issues
 
 - [x] Determine checkpoint location, size, checksum/version, and access requirements using metadata only.
 - [x] Determine the size of automatically downloaded VAE, T5, and tokenizer assets without downloading them.
 - [x] Audit offload/sharding feasibility and confirm that no configuration-only solution exists.
-- [ ] Choose option A (official path on a GPU with at least 24/32 GB) or authorize option B
-      (multi-GPU non-algorithm patch on a separate baseline branch).
-- [ ] Recompute disk requirements for the selected offload/sharding path before further installs.
+- [x] Choose option A (official path on a GPU with at least 24/32 GB) or authorize option B
+      (multi-GPU non-algorithm patch on a separate baseline branch). Option B selected.
+- [x] Implement and test the multi-GPU placement path (`20/20` PASS).
+- [x] Install the core, FastWAM, and compatible minimal LIBERO software stack.
+- [x] Recompute disk headroom: approximately 45 GiB free for the 23.129 GiB base-only set.
+- [ ] Download and verify the base-only assets.
+- [ ] Run one four-GPU trial after asset verification.
 - [ ] Resolve the `num_frames` / `action_horizon` coupling before designing an `H` sweep.
 - [ ] Characterize variant-dependent `num_inference_steps` compute before designing a `D` sweep.
 - [ ] Decide whether an evidence-preserving implementation extension is justified for `W`,
       which the baseline does not support.
 - [x] Create the isolated Python 3.10 core environment and run no-weight FP16/BF16 smoke tests.
-- [ ] Install remaining dependencies and weights only after the feasibility and disk reviews pass.
+- [ ] Do not report performance or efficiency until checkpoint-backed evaluation produces results.
 
 ## Decisions Since Last Handoff
 
@@ -96,18 +109,21 @@ by the main agent.
 - If the video GPU lacks working-memory headroom, use paired-layer sharding of the video expert
   across two GPUs. Sequential offload is a fallback only.
 - Accelerate device-map/FSDP paths are not recommended for this inference architecture.
+- The multi-GPU non-algorithm placement implementation is fixed by commits `f60e17c`,
+  `47baac4`, and `ead553d`; its current structural/device test suite passes `20/20`.
+- LIBERO is fixed at `8f1084e`. Its legacy requirements are forbidden because they conflict
+  with the validated stack; use the compatible minimal dependencies and explicit `PYTHONPATH`.
+- Preserve the first failed editable-packaging import attempt as setup evidence. The subsequent
+  no-model EGL smoke passed with the explicit import path.
 - Keep following `DEC-001` through `DEC-003`: Oracle before Controller, one axis at a time,
   and public-checkpoint inference/evaluation before large-model training.
 
 ## Next Exact Action
 
-1. Choose one path:
-   - **A — Official path:** use a GPU with at least 24/32 GB memory and preserve the official
-     single-device evaluation path.
-   - **B — Adapted path:** explicitly authorize a separate baseline branch for a multi-GPU,
-     non-algorithm placement patch using the audited design above.
-2. After the choice, recompute memory and disk headroom for that exact path.
-3. Only then install the remaining dependencies and download required weights.
+1. Download the audited base-only 23.129 GiB asset set without optional IDM assets.
+2. Verify every downloaded asset against its expected identity, size, and checksum before use.
+3. Run exactly one four-GPU trial through the validated launcher.
+4. Record model output, peak memory, latency, failures, and artifact paths before expanding runs.
 
 ## Recent Evidence
 
@@ -143,5 +159,16 @@ by the main agent.
   34 MiB KV transfer; paired-layer video sharding is the low-headroom alternative.
 - `2026-09-13 12:46 +08:00` — `experiment_runner` multi-GPU feasibility audit — sequential
   offload is fallback-only; Accelerate device-map and FSDP are not recommended.
+- `2026-09-14 08:52 +08:00` — `experiment_runner` implementation report — FastWAM branch
+  `exp/multigpu-placement` at commits `f60e17c`, `47baac4`, and `ead553d`; multi-GPU tests
+  passed `20/20`.
+- `2026-09-14 08:52 +08:00` — dependency report — core and FastWAM dependencies installed;
+  LIBERO pinned at `8f1084e` with a compatible minimal stack and explicit `PYTHONPATH`, while
+  its legacy requirements remain prohibited.
+- `2026-09-14 08:52 +08:00` — setup/simulation report — the first editable-packaging import
+  failed and was retained; the following no-model EGL smoke passed on `libero_spatial` task 0,
+  fixed initial state, one step, two 64×64 renders, in 6.49 s.
+- `2026-09-14 08:52 +08:00` — asset/launcher preflight — launcher tests passed `4/4` and
+  compose-only passed; approximately 45 GiB remains. No model result exists yet.
 - `2026-09-13` — `notes/environment_2026-09-13.md` — base PyTorch import fails and the
   workspace filesystem had approximately 55 GiB free.

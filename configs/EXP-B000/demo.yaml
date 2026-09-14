@@ -1,0 +1,41 @@
+experiment_id: EXP-B000
+mode: fastwam_base_first_frame
+
+pins:
+  fastwam_commit: ead553d1d7f8b335112609e6293676dfab880355
+  libero_commit: 8f1084e3132a39270c3a13ebe37270a43ece2a01
+  base_huggingface_revision: 8eaceeb24c3cc92ff2a9c9a9d266a4941b836705
+
+paths:
+  task_file: configs/EXP-B000/tasks.txt
+  asset_manifest: results/manifest/EXP-B000_assets.json
+  libero_config_dir: configs/EXP-B000/libero
+  diffsynth_model_base: checkpoints/diffsynth
+  output_dir: outputs/EXP-B000/demo
+  log_file: logs/EXP-B000/demo.log
+
+evaluation:
+  task_suite: libero_spatial
+  task_id: 0
+  seed: 42
+  num_trials: 1
+  sigma_shift: 5.0
+  num_inference_steps: 10
+  replan_steps: 10
+  action_horizon: 32
+  visualize_future_video: false
+  compile_action_infer: false
+  mixed_precision: bf16
+
+placement:
+  physical_gpu_groups:
+    - [0, 1, 2, 3]
+  logical_devices:
+    video: cuda:0
+    action: cuda:1
+    vae: cuda:1
+    text_encoder: [cuda:2, cuda:3]
+
+manager:
+  num_gpus: 4
+  task_config: libero_uncond_2cam224_1e-4

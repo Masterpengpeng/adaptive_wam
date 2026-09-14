@@ -1,0 +1,10 @@
+# Install after the FastWAM editable package. Do not install the upstream
+# LIBERO requirements.txt because it downgrades FastWAM's core dependencies.
+mujoco==3.3.2
+robosuite==1.4.0
+bddl==1.0.1
+easydict==1.9
+gym==0.25.2
+cloudpickle==2.1.0
+matplotlib>=3.8,<3.11
+
