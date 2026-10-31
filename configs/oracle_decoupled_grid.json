@@ -1,0 +1,16 @@
+{
+  "schema_version": 1,
+  "description": "Exploratory single-axis H/D/W response grid around H2-D2-W1-E4, plus action-only and joint-full anchors.",
+  "configurations": [
+    {"name": "ActionOnly", "H": 0, "D": 0, "W": 1, "E": 10},
+    {"name": "Base_H2_D2_W1", "H": 2, "D": 2, "W": 1, "E": 4},
+    {"name": "H4", "H": 4, "D": 2, "W": 1, "E": 4},
+    {"name": "H8", "H": 8, "D": 2, "W": 1, "E": 4},
+    {"name": "D4", "H": 2, "D": 4, "W": 1, "E": 4},
+    {"name": "D8", "H": 2, "D": 8, "W": 1, "E": 4},
+    {"name": "D16", "H": 2, "D": 16, "W": 1, "E": 4},
+    {"name": "W2", "H": 2, "D": 2, "W": 2, "E": 4},
+    {"name": "W4", "H": 2, "D": 2, "W": 4, "E": 4},
+    {"name": "JointFull", "H": 8, "D": 16, "W": 4, "E": 2}
+  ]
+}

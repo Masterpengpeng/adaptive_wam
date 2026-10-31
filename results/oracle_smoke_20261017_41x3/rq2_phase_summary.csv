@@ -1,0 +1,6 @@
+phase,state_count,mean_H,mean_D,mean_W,mean_E
+reaching,10,0.6,0.6,1.0,8.2
+precontact,10,0.0,0.0,1.0,10.0
+manipulation,10,0.0,0.0,1.0,10.0
+placement,6,0.0,0.0,1.0,10.0
+failure_recovery,5,0.0,0.0,1.0,10.0

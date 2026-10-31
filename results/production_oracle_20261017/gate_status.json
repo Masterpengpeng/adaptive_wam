@@ -1,0 +1,21 @@
+{
+  "passed": false,
+  "checks": {
+    "precontact": {
+      "state_count": 10,
+      "mean_E": 10.0,
+      "mean_D": 0.0,
+      "passed": false
+    },
+    "manipulation": {
+      "state_count": 10,
+      "mean_E": 10.0,
+      "mean_D": 0.0,
+      "passed": false
+    }
+  },
+  "selected_lambda": 0.1,
+  "best_success_rate": 0.8780487804878049,
+  "plot_exists": true,
+  "stage": "smoke_rejected"
+}

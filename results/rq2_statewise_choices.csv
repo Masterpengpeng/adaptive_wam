@@ -1,0 +1,14 @@
+state_id,task_suite,task_id,phase,normalized_phase,H,D,W,E,success_rate,mean_return,relative_compute
+snapshots/libero_spatial_task0_seed0_step15_approach.pkl,libero_spatial,0,approach,reaching,2,2,1,4,1.0,1.0,0.2892294168639918
+snapshots/libero_spatial_task0_seed0_step32_pre_contact.pkl,libero_spatial,0,pre_contact,precontact,0,0,1,10,1.0,1.0,0.22237873824790885
+snapshots/libero_spatial_task0_seed0_step49_grasp_interaction.pkl,libero_spatial,0,grasp_interaction,manipulation,0,0,1,10,1.0,1.0,0.1334272429487453
+snapshots/libero_spatial_task0_seed0_step66_placement.pkl,libero_spatial,0,placement,placement,0,0,1,10,1.0,1.0,0.044475747649581766
+snapshots/libero_spatial_task0_seed1_step16_approach.pkl,libero_spatial,0,approach,reaching,2,2,1,4,1.0,1.0,0.2892294168639918
+snapshots/libero_spatial_task0_seed1_step34_pre_contact.pkl,libero_spatial,0,pre_contact,precontact,0,0,1,10,1.0,1.0,0.22237873824790885
+snapshots/libero_spatial_task0_seed1_step51_grasp_interaction.pkl,libero_spatial,0,grasp_interaction,manipulation,0,0,1,10,1.0,1.0,0.1334272429487453
+snapshots/libero_spatial_task0_seed1_step69_placement.pkl,libero_spatial,0,placement,placement,0,0,1,10,1.0,1.0,0.044475747649581766
+snapshots/libero_spatial_task1_seed2_step395_failure_pre_5.pkl,libero_spatial,1,failure_pre_5,failure_recovery,0,0,1,10,0.0,0.0,0.044475747649581766
+snapshots/libero_spatial_task1_seed2_step396_failure_pre_4.pkl,libero_spatial,1,failure_pre_4,failure_recovery,2,2,1,4,0.0,0.0,0.022374930966501182
+snapshots/libero_spatial_task1_seed2_step397_failure_pre_3.pkl,libero_spatial,1,failure_pre_3,failure_recovery,2,2,1,4,0.0,0.0,0.022374930966501182
+snapshots/libero_spatial_task1_seed2_step398_failure_pre_2.pkl,libero_spatial,1,failure_pre_2,failure_recovery,2,2,1,4,0.0,0.0,0.022374930966501182
+snapshots/libero_spatial_task1_seed2_step399_failure_pre_1.pkl,libero_spatial,1,failure_pre_1,failure_recovery,2,2,1,4,0.0,0.0,0.022374930966501182

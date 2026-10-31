@@ -1,0 +1,74 @@
+{
+  "stage": "waiting_for_gpus",
+  "gpu_selection": "auto",
+  "gpu_ids": [],
+  "candidate_gpu_ids": [
+    0,
+    1,
+    2,
+    3,
+    4,
+    5,
+    6,
+    7,
+    8,
+    9
+  ],
+  "available_gpu_ids": [],
+  "gpu_stats": {
+    "0": {
+      "memory_mib": 1001,
+      "utilization_percent": 42
+    },
+    "1": {
+      "memory_mib": 1001,
+      "utilization_percent": 42
+    },
+    "2": {
+      "memory_mib": 5929,
+      "utilization_percent": 40
+    },
+    "3": {
+      "memory_mib": 2373,
+      "utilization_percent": 98
+    },
+    "4": {
+      "memory_mib": 1875,
+      "utilization_percent": 36
+    },
+    "5": {
+      "memory_mib": 6699,
+      "utilization_percent": 98
+    },
+    "6": {
+      "memory_mib": 1875,
+      "utilization_percent": 43
+    },
+    "7": {
+      "memory_mib": 693,
+      "utilization_percent": 23
+    },
+    "8": {
+      "memory_mib": 779,
+      "utilization_percent": 35
+    },
+    "9": {
+      "memory_mib": 1379,
+      "utilization_percent": 26
+    }
+  },
+  "free_check_counts": {
+    "0": 0,
+    "1": 0,
+    "2": 0,
+    "3": 0,
+    "4": 0,
+    "5": 0,
+    "6": 0,
+    "7": 0,
+    "8": 0,
+    "9": 0
+  },
+  "consecutive_free_checks": 0,
+  "required_free_checks": 3
+}

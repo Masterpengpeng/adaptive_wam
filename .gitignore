@@ -29,3 +29,6 @@ venv/
 # Miscellaneous
 *.log
 .DS_Store
+
+# Pytest
+.pytest_cache/

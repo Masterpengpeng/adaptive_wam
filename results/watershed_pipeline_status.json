@@ -1,0 +1,25 @@
+{
+  "stage": "complete",
+  "watershed_count": 8,
+  "snapshot_count": 41,
+  "snapshot_phase_counts": {
+    "precontact": 15,
+    "manipulation": 16,
+    "failure_recovery": 10
+  },
+  "expected_result_rows": 738,
+  "completed_result_rows": 738,
+  "output_csv": "/home/lab416/ZP_projects/adaptive_wam/results/oracle_watershed_smoke.csv",
+  "analysis": "/home/lab416/ZP_projects/adaptive_wam/results/oracle_watershed_v1/oracle_analysis.json",
+  "plot": "/home/lab416/ZP_projects/adaptive_wam/results/oracle_watershed_v1/rq2_phase_distribution.png",
+  "primary_analysis_passed": false,
+  "primary_phase_means": {
+    "precontact": {"D": 0.13333333333333333, "E": 9.6},
+    "manipulation": {"D": 0.0, "E": 10.0}
+  },
+  "low_lambda_sensitivity": {
+    "lambda": 0.001,
+    "precontact": {"D": 1.6, "E": 5.2},
+    "manipulation": {"D": 1.125, "E": 7.0}
+  }
+}

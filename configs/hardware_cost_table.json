@@ -1,0 +1,407 @@
+{
+  "schema_version": 1,
+  "model_path": "/mnt/media2/adaptive_wam/checkpoints/fastwam_release/libero_optional_idm_2cam224.pt",
+  "device": [
+    "NVIDIA GeForce RTX 2080 Ti",
+    "NVIDIA GeForce RTX 2080 Ti",
+    "NVIDIA GeForce RTX 2080 Ti",
+    "NVIDIA GeForce RTX 2080 Ti"
+  ],
+  "precision": "FP16",
+  "input": {
+    "camera_count": 2,
+    "camera_shape": [
+      224,
+      224,
+      3
+    ],
+    "camera_dtype": "uint8",
+    "execution_chunk": 10
+  },
+  "protocol": {
+    "warmup_iterations": 10,
+    "measurement_iterations": 50,
+    "timer": "torch.cuda.Event(enable_timing=True), synchronized per GPU",
+    "latency_aggregation": "maximum CUDA event elapsed time across model GPUs",
+    "peak_vram_definition": "maximum per-GPU torch.cuda.max_memory_allocated across model GPUs",
+    "relative_compute_reference": {
+      "name": "Fixed-Full",
+      "H": 8,
+      "D": 16,
+      "W": 4,
+      "definition": "measured mean latency divided by Fixed-Full mean latency"
+    }
+  },
+  "configurations": [
+    {
+      "H": 0,
+      "D": 0,
+      "W": 1,
+      "E": 10,
+      "latency_ms_mean": 960.9117456054687,
+      "latency_ms_std": 1.6729774125971346,
+      "peak_vram_mb": 9603.07568359375,
+      "relative_compute": 0.044475747649581766
+    },
+    {
+      "H": 2,
+      "D": 2,
+      "W": 1,
+      "E": 10,
+      "latency_ms_mean": 483.4170330810547,
+      "latency_ms_std": 3.133845982201593,
+      "peak_vram_mb": 9712.1787109375,
+      "relative_compute": 0.022374930966501182
+    },
+    {
+      "H": 2,
+      "D": 2,
+      "W": 2,
+      "E": 10,
+      "latency_ms_mean": 1020.88837890625,
+      "latency_ms_std": 77.36895098998328,
+      "peak_vram_mb": 9712.1787109375,
+      "relative_compute": 0.04725176284531263
+    },
+    {
+      "H": 2,
+      "D": 2,
+      "W": 4,
+      "E": 10,
+      "latency_ms_mean": 1943.6216943359375,
+      "latency_ms_std": 4.467130253806619,
+      "peak_vram_mb": 9712.1787109375,
+      "relative_compute": 0.08996042393994204
+    },
+    {
+      "H": 2,
+      "D": 4,
+      "W": 1,
+      "E": 10,
+      "latency_ms_mean": 845.7492993164062,
+      "latency_ms_std": 0.8851192724346757,
+      "peak_vram_mb": 9712.1787109375,
+      "relative_compute": 0.039145460114555816
+    },
+    {
+      "H": 2,
+      "D": 4,
+      "W": 2,
+      "E": 10,
+      "latency_ms_mean": 1687.8698364257812,
+      "latency_ms_std": 4.426786271221066,
+      "peak_vram_mb": 9712.1787109375,
+      "relative_compute": 0.07812296316860284
+    },
+    {
+      "H": 2,
+      "D": 4,
+      "W": 4,
+      "E": 10,
+      "latency_ms_mean": 3372.2138525390624,
+      "latency_ms_std": 4.923359461606729,
+      "peak_vram_mb": 9712.1787109375,
+      "relative_compute": 0.15608273393666144
+    },
+    {
+      "H": 2,
+      "D": 8,
+      "W": 1,
+      "E": 10,
+      "latency_ms_mean": 1560.40083984375,
+      "latency_ms_std": 1.5203022007385611,
+      "peak_vram_mb": 9712.1787109375,
+      "relative_compute": 0.07222306762558851
+    },
+    {
+      "H": 2,
+      "D": 8,
+      "W": 2,
+      "E": 10,
+      "latency_ms_mean": 3118.08537109375,
+      "latency_ms_std": 5.413970464647671,
+      "peak_vram_mb": 9712.1787109375,
+      "relative_compute": 0.14432041105631052
+    },
+    {
+      "H": 2,
+      "D": 8,
+      "W": 4,
+      "E": 10,
+      "latency_ms_mean": 6226.530009765625,
+      "latency_ms_std": 5.383815277261389,
+      "peak_vram_mb": 9712.1787109375,
+      "relative_compute": 0.2881946013391595
+    },
+    {
+      "H": 2,
+      "D": 16,
+      "W": 1,
+      "E": 10,
+      "latency_ms_mean": 2989.9751171875,
+      "latency_ms_std": 5.23755404221647,
+      "peak_vram_mb": 9712.1787109375,
+      "relative_compute": 0.1383908349530774
+    },
+    {
+      "H": 2,
+      "D": 16,
+      "W": 2,
+      "E": 10,
+      "latency_ms_mean": 5979.655830078125,
+      "latency_ms_std": 5.359279563409506,
+      "peak_vram_mb": 9712.1787109375,
+      "relative_compute": 0.2767680434193576
+    },
+    {
+      "H": 2,
+      "D": 16,
+      "W": 4,
+      "E": 10,
+      "latency_ms_mean": 11938.1359765625,
+      "latency_ms_std": 6.25452197714503,
+      "peak_vram_mb": 9712.1787109375,
+      "relative_compute": 0.5525559714804317
+    },
+    {
+      "H": 4,
+      "D": 2,
+      "W": 1,
+      "E": 10,
+      "latency_ms_mean": 659.2955871582031,
+      "latency_ms_std": 0.9601873230517254,
+      "peak_vram_mb": 9821.92041015625,
+      "relative_compute": 0.030515460233504512
+    },
+    {
+      "H": 4,
+      "D": 2,
+      "W": 2,
+      "E": 10,
+      "latency_ms_mean": 1313.52951171875,
+      "latency_ms_std": 1.008573487873862,
+      "peak_vram_mb": 9821.92041015625,
+      "relative_compute": 0.060796641690201235
+    },
+    {
+      "H": 4,
+      "D": 2,
+      "W": 4,
+      "E": 10,
+      "latency_ms_mean": 2621.650673828125,
+      "latency_ms_std": 4.6524819611531605,
+      "peak_vram_mb": 9821.92041015625,
+      "relative_compute": 0.12134295821419722
+    },
+    {
+      "H": 4,
+      "D": 4,
+      "W": 1,
+      "E": 10,
+      "latency_ms_mean": 1118.2829833984374,
+      "latency_ms_std": 0.7337167869372924,
+      "peak_vram_mb": 9821.92041015625,
+      "relative_compute": 0.051759666793448844
+    },
+    {
+      "H": 4,
+      "D": 4,
+      "W": 2,
+      "E": 10,
+      "latency_ms_mean": 2233.4991162109377,
+      "latency_ms_std": 5.523232425055842,
+      "peak_vram_mb": 9821.92041015625,
+      "relative_compute": 0.10337738457507333
+    },
+    {
+      "H": 4,
+      "D": 4,
+      "W": 4,
+      "E": 10,
+      "latency_ms_mean": 4461.431318359375,
+      "latency_ms_std": 4.4065811894199935,
+      "peak_vram_mb": 9821.92041015625,
+      "relative_compute": 0.20649710483689104
+    },
+    {
+      "H": 4,
+      "D": 8,
+      "W": 1,
+      "E": 10,
+      "latency_ms_mean": 2039.9700756835937,
+      "latency_ms_std": 4.577471684884485,
+      "peak_vram_mb": 9821.92041015625,
+      "relative_compute": 0.09441990350699006
+    },
+    {
+      "H": 4,
+      "D": 8,
+      "W": 2,
+      "E": 10,
+      "latency_ms_mean": 4076.573056640625,
+      "latency_ms_std": 4.807755764726064,
+      "peak_vram_mb": 9821.92041015625,
+      "relative_compute": 0.1886839612185096
+    },
+    {
+      "H": 4,
+      "D": 8,
+      "W": 4,
+      "E": 10,
+      "latency_ms_mean": 8148.287236328125,
+      "latency_ms_std": 5.130805885623669,
+      "peak_vram_mb": 9821.92041015625,
+      "relative_compute": 0.37714302958269014
+    },
+    {
+      "H": 4,
+      "D": 16,
+      "W": 1,
+      "E": 10,
+      "latency_ms_mean": 3883.7224462890626,
+      "latency_ms_std": 5.003502512104024,
+      "peak_vram_mb": 9821.92041015625,
+      "relative_compute": 0.17975788125404893
+    },
+    {
+      "H": 4,
+      "D": 16,
+      "W": 2,
+      "E": 10,
+      "latency_ms_mean": 7760.745703125,
+      "latency_ms_std": 5.0147344378362435,
+      "peak_vram_mb": 9821.92041015625,
+      "relative_compute": 0.3592056908902448
+    },
+    {
+      "H": 4,
+      "D": 16,
+      "W": 4,
+      "E": 10,
+      "latency_ms_mean": 15512.49380859375,
+      "latency_ms_std": 6.352798571411116,
+      "peak_vram_mb": 9821.92041015625,
+      "relative_compute": 0.7179949284645196
+    },
+    {
+      "H": 8,
+      "D": 2,
+      "W": 1,
+      "E": 10,
+      "latency_ms_mean": 954.8540991210938,
+      "latency_ms_std": 1.339253113165929,
+      "peak_vram_mb": 10041.84326171875,
+      "relative_compute": 0.04419536981298901
+    },
+    {
+      "H": 8,
+      "D": 2,
+      "W": 2,
+      "E": 10,
+      "latency_ms_mean": 1904.5712670898438,
+      "latency_ms_std": 5.062869200965663,
+      "peak_vram_mb": 10041.84326171875,
+      "relative_compute": 0.08815297704822853
+    },
+    {
+      "H": 8,
+      "D": 2,
+      "W": 4,
+      "E": 10,
+      "latency_ms_mean": 3801.475576171875,
+      "latency_ms_std": 5.1556684811226745,
+      "peak_vram_mb": 10041.84326171875,
+      "relative_compute": 0.17595108936392062
+    },
+    {
+      "H": 8,
+      "D": 4,
+      "W": 1,
+      "E": 10,
+      "latency_ms_mean": 1588.9040356445312,
+      "latency_ms_std": 2.133441469146432,
+      "peak_vram_mb": 10041.84326171875,
+      "relative_compute": 0.07354233648606372
+    },
+    {
+      "H": 8,
+      "D": 4,
+      "W": 2,
+      "E": 10,
+      "latency_ms_mean": 3173.8821435546874,
+      "latency_ms_std": 5.021530676896937,
+      "peak_vram_mb": 10041.84326171875,
+      "relative_compute": 0.14690296162142005
+    },
+    {
+      "H": 8,
+      "D": 4,
+      "W": 4,
+      "E": 10,
+      "latency_ms_mean": 6342.148564453125,
+      "latency_ms_std": 6.457822447503412,
+      "peak_vram_mb": 10041.84326171875,
+      "relative_compute": 0.2935459998264893
+    },
+    {
+      "H": 8,
+      "D": 8,
+      "W": 1,
+      "E": 10,
+      "latency_ms_mean": 2861.3994873046877,
+      "latency_ms_std": 4.545821368505889,
+      "peak_vram_mb": 10041.84326171875,
+      "relative_compute": 0.13243971894819315
+    },
+    {
+      "H": 8,
+      "D": 8,
+      "W": 2,
+      "E": 10,
+      "latency_ms_mean": 5716.808935546875,
+      "latency_ms_std": 6.552912028353791,
+      "peak_vram_mb": 10041.84326171875,
+      "relative_compute": 0.2646021892656215
+    },
+    {
+      "H": 8,
+      "D": 8,
+      "W": 4,
+      "E": 10,
+      "latency_ms_mean": 11428.74337890625,
+      "latency_ms_std": 7.407193431295342,
+      "peak_vram_mb": 10041.84326171875,
+      "relative_compute": 0.528978762926644
+    },
+    {
+      "H": 8,
+      "D": 16,
+      "W": 1,
+      "E": 10,
+      "latency_ms_mean": 5398.861875,
+      "latency_ms_std": 5.5466134976124195,
+      "peak_vram_mb": 10041.84326171875,
+      "relative_compute": 0.24988602693804068
+    },
+    {
+      "H": 8,
+      "D": 16,
+      "W": 2,
+      "E": 10,
+      "latency_ms_mean": 10783.21654296875,
+      "latency_ms_std": 6.3855757862273,
+      "peak_vram_mb": 10041.84326171875,
+      "relative_compute": 0.4991005885911862
+    },
+    {
+      "H": 8,
+      "D": 16,
+      "W": 4,
+      "E": 10,
+      "latency_ms_mean": 21605.2971875,
+      "latency_ms_std": 7.683731204529698,
+      "peak_vram_mb": 10041.84326171875,
+      "relative_compute": 1.0
+    }
+  ]
+}

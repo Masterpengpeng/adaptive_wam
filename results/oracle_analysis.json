@@ -1,0 +1,155 @@
+{
+  "objective": "Q(s,B) - lambda * C(s,B)",
+  "value_metric": "success",
+  "cost_metric": "mean estimated_total_relative_compute when available; otherwise relative_compute(H,D,W) / E * remaining_steps",
+  "lambda_grid": [
+    0.001,
+    0.0014677992676220691,
+    0.0021544346900318843,
+    0.0031622776601683794,
+    0.004641588833612777,
+    0.006812920690579608,
+    0.01,
+    0.01467799267622069,
+    0.021544346900318832,
+    0.03162277660168379,
+    0.046415888336127774,
+    0.06812920690579612,
+    0.1,
+    0.1467799267622069,
+    0.21544346900318823,
+    0.31622776601683794,
+    0.46415888336127775,
+    0.6812920690579608,
+    1.0,
+    1.467799267622069,
+    2.154434690031882,
+    3.1622776601683795,
+    4.6415888336127775,
+    6.812920690579608,
+    10.0
+  ],
+  "state_count": 13,
+  "config_count": 6,
+  "cost_table_metadata": {
+    "device": [
+      "NVIDIA GeForce RTX 2080 Ti",
+      "NVIDIA GeForce RTX 2080 Ti",
+      "NVIDIA GeForce RTX 2080 Ti",
+      "NVIDIA GeForce RTX 2080 Ti"
+    ],
+    "precision": "FP16"
+  },
+  "rq1": {
+    "b_full_reference_relative_compute": 1.115180782374558,
+    "minimum_compute_at_100_percent_success": {
+      "state_wise": null,
+      "task_wise": null,
+      "global_fixed": null
+    },
+    "state_wise_compute_savings_percent_vs_global": null,
+    "budget_comparisons": [
+      {
+        "budget_fraction_of_b_full": 0.05,
+        "budget_relative_compute": 0.055759039118727906,
+        "state_wise_success_rate": null,
+        "global_fixed_success_rate": null,
+        "success_lead": null
+      },
+      {
+        "budget_fraction_of_b_full": 0.1,
+        "budget_relative_compute": 0.11151807823745581,
+        "state_wise_success_rate": null,
+        "global_fixed_success_rate": null,
+        "success_lead": null
+      },
+      {
+        "budget_fraction_of_b_full": 0.2,
+        "budget_relative_compute": 0.22303615647491162,
+        "state_wise_success_rate": 0.6153846153846154,
+        "global_fixed_success_rate": 0.6153846153846154,
+        "success_lead": 0.0
+      }
+    ]
+  },
+  "rq2": {
+    "selected_lambda": 0.1,
+    "best_success_rate": 0.6153846153846154,
+    "success_tolerance": 0.01,
+    "phase_distribution": [
+      {
+        "phase": "reaching",
+        "state_count": 2,
+        "mean_H": 2.0,
+        "mean_D": 2.0,
+        "mean_W": 1.0,
+        "mean_E": 4.0
+      },
+      {
+        "phase": "precontact",
+        "state_count": 2,
+        "mean_H": 0.0,
+        "mean_D": 0.0,
+        "mean_W": 1.0,
+        "mean_E": 10.0
+      },
+      {
+        "phase": "manipulation",
+        "state_count": 2,
+        "mean_H": 0.0,
+        "mean_D": 0.0,
+        "mean_W": 1.0,
+        "mean_E": 10.0
+      },
+      {
+        "phase": "placement",
+        "state_count": 2,
+        "mean_H": 0.0,
+        "mean_D": 0.0,
+        "mean_W": 1.0,
+        "mean_E": 10.0
+      },
+      {
+        "phase": "failure_recovery",
+        "state_count": 5,
+        "mean_H": 1.6,
+        "mean_D": 1.6,
+        "mean_W": 1.0,
+        "mean_E": 5.2
+      }
+    ],
+    "directional_mann_whitney_tests": {
+      "E": {
+        "hypothesis": "precontact/manipulation execution horizon is lower than reaching",
+        "alternative": "less",
+        "n_deliberate": 4,
+        "n_reaching": 2,
+        "mean_deliberate": 10.0,
+        "mean_reaching": 4.0,
+        "u_statistic": 8.0,
+        "p_value": 0.9940581053789264
+      },
+      "D": {
+        "hypothesis": "precontact/manipulation denoising depth is higher than reaching",
+        "alternative": "greater",
+        "n_deliberate": 4,
+        "n_reaching": 2,
+        "mean_deliberate": 0.0,
+        "mean_reaching": 2.0,
+        "u_statistic": 0.0,
+        "p_value": 0.9940581053789264
+      },
+      "W": {
+        "hypothesis": "precontact/manipulation rollout count is higher than reaching",
+        "alternative": "greater",
+        "n_deliberate": 4,
+        "n_reaching": 2,
+        "mean_deliberate": 1.0,
+        "mean_reaching": 1.0,
+        "u_statistic": 4.0,
+        "p_value": 1.0
+      }
+    },
+    "interpretation": "Exploratory in-sample tests over state-level selected configurations; independent-state assumption and small sample sizes limit inferential claims."
+  }
+}

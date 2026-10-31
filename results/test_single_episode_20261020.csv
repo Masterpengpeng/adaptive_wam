@@ -1,0 +1,2 @@
+task_suite,task_id,seed,method,config,success,steps,episode_return,wam_calls,local_latency_ms_mean,local_latency_ms_total,trajectory_path
+libero_spatial,0,0,No-Imagination,"{'H': 0, 'D': 0, 'W': 1, 'E': 10}",1,75,1.0,8,941.2852694513276,7530.282155610621,/home/lab416/ZP_projects/adaptive_wam/outputs/trajectories_test_20261020/libero_spatial/task_0/seed_0/No-Imagination_ep0.pt

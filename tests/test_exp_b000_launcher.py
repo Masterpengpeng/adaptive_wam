@@ -1,8 +1,10 @@
 import hashlib
 import tempfile
 import unittest
+from unittest.mock import Mock, patch
 from pathlib import Path
 
+from scripts import download_exp_b000_assets as download_exp_b000
 from scripts.launch_exp_b000 import (
     DEFAULT_CONFIG,
     build_environment,
@@ -46,6 +48,44 @@ class ExpB000LauncherTest(unittest.TestCase):
             self.assertEqual(hash_file(path, "sha256"), hashlib.sha256(payload).hexdigest())
             blob = hashlib.sha1(f"blob {len(payload)}\0".encode() + payload).hexdigest()
             self.assertEqual(hash_file(path, "git_blob_sha1"), blob)
+
+    def test_asset_download_disk_gate_checks_destination_filesystem(self):
+        with tempfile.TemporaryDirectory() as directory:
+            project_root = Path(directory)
+            destination = project_root / "checkpoints"
+            destination.mkdir()
+            entry = {
+                "local_path": "checkpoints/weights.bin",
+                "remote_path": "weights.bin",
+                "size": 5,
+                "hash_type": "sha256",
+                "hash": "unused",
+            }
+            asset_class = {
+                "id": "test",
+                "source": "huggingface",
+                "repository": "test/model",
+                "revision": "test-revision",
+            }
+            session = Mock()
+            available_space = download_exp_b000.MIN_FREE_BYTES + 4
+
+            with (
+                patch.object(download_exp_b000, "PROJECT_ROOT", project_root),
+                patch.object(
+                    download_exp_b000, "LOG_PATH", project_root / "download.log"
+                ),
+                patch.object(
+                    download_exp_b000.shutil,
+                    "disk_usage",
+                    return_value=Mock(free=available_space),
+                ) as disk_usage,
+            ):
+                with self.assertRaisesRegex(RuntimeError, "disk gate failed"):
+                    download_exp_b000.download_one(session, asset_class, entry)
+
+            disk_usage.assert_called_once_with(destination)
+            session.get.assert_not_called()
 
     def test_command_and_environment_pin_safe_multigpu_path(self):
         command = build_manager_command(self.config)

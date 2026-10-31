@@ -1,0 +1,3 @@
+method,H,D,W,E,episodes,success_rate,avg_steps,avg_return,avg_wam_calls,avg_episode_compute_ms,episode_latency_s,relative_compute_percent,cost_source
+No-Imagination,0,0,1,10,25,0.88,138.68,0.88,14.36,13798.69266689453,13.798692666894532,1.0056431937915853,hardware_cost_table
+Fixed-Full,8,16,4,2,25,0.96,126.08,0.96,63.32,1372126.0932388157,1372.1260932388157,100.0,measured_local_wall_time

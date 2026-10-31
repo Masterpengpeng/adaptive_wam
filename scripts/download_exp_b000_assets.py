@@ -13,7 +13,10 @@ from urllib.parse import quote
 
 import requests
 
-from launch_exp_b000 import PROJECT_ROOT, hash_file, iter_manifest_files
+if __package__:
+    from .launch_exp_b000 import PROJECT_ROOT, hash_file, iter_manifest_files
+else:
+    from launch_exp_b000 import PROJECT_ROOT, hash_file, iter_manifest_files
 
 
 MANIFEST_PATH = PROJECT_ROOT / "results/manifest/EXP-B000_assets.json"
@@ -100,10 +103,11 @@ def download_one(session: requests.Session, asset_class: dict, entry: dict) -> N
             f"incomplete file is oversized: {incomplete_path} ({partial_size})"
         )
     remaining = expected_size - partial_size
-    free = shutil.disk_usage(PROJECT_ROOT).free
+    free = shutil.disk_usage(final_path.parent).free
     projected_free = free - remaining
     log(
-        f"GATE path={final_path} free={free} remaining_download={remaining} "
+        f"GATE path={final_path} storage_path={final_path.parent} free={free} "
+        f"remaining_download={remaining} "
         f"projected_free={projected_free} minimum_free={MIN_FREE_BYTES}"
     )
     if projected_free < MIN_FREE_BYTES:

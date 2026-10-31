@@ -1,0 +1,4 @@
+phase,state_count,mean_H,mean_D,mean_W,mean_E
+precontact,15,0.13333333333333333,0.13333333333333333,1.0,9.6
+manipulation,16,0.0,0.0,1.0,10.0
+failure_recovery,10,0.2,0.2,1.0,9.4
