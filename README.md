@@ -245,6 +245,13 @@ plots and reports under `results/`.
 
 The experiment protocol is recorded in `EXPERIMENT_LOG.md`.
 
+## Running the decoupled experiment on another server
+
+The migration workflow fixes the snapshot paths, applies the exact local
+FastWAM multi-GPU patch, recreates the Python environment, and downloads the
+verified Optional-IDM runtime assets. See
+[`docs/decoupled_server_migration.md`](docs/decoupled_server_migration.md).
+
 ## Experiment progress and results
 
 The current plan stage, acceptance checklist, execution history, and measured

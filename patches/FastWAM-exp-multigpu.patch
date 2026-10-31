@@ -1,0 +1,2341 @@
+diff --git a/configs/sim_libero.yaml b/configs/sim_libero.yaml
+index dc44f89..4be5c6e 100644
+--- a/configs/sim_libero.yaml
++++ b/configs/sim_libero.yaml
+@@ -40,6 +40,17 @@ EVALUATION:
+   # Optional external inputs
+   dataset_stats_path: null
+   device: cuda
++  # Optional semantics-preserving component placement for low-memory multi-GPU hosts.
++  # Leave all values null to retain the official single-device path.
++  video_device: null
++  action_device: null
++  vae_device: null
++  text_encoder_device: null
++  # Two distinct CUDA devices for contiguous Wan UMT5 layer partitioning.
++  # Mutually exclusive with text_encoder_device.
++  text_encoder_devices: null
++  # Safe only for a single-task process after that task prompt is cached.
++  offload_text_encoder_after_prompt_cache: false
+ 
+ MULTIRUN:
+   create_only: false
+@@ -50,6 +61,9 @@ MULTIRUN:
+     - libero_spatial
+     - libero_object
+   num_gpus: 8
++  # Optional physical four-GPU worker groups, e.g. [[0,1,2,3],[4,5,6,7]].
++  # null preserves the original one-worker-per-GPU behavior.
++  gpu_groups: null
+ 
+ hydra:
+   job:
+diff --git a/experiments/libero/eval_libero_single.py b/experiments/libero/eval_libero_single.py
+index 62c8fa8..f3a67e9 100644
+--- a/experiments/libero/eval_libero_single.py
++++ b/experiments/libero/eval_libero_single.py
+@@ -39,6 +39,7 @@ from fastwam.datasets.lerobot.processors.fastwam_processor import FastWAMProcess
+ from fastwam.datasets.lerobot.utils.normalizer import load_dataset_stats_from_json
+ from fastwam.utils.pytorch_utils import set_global_seed
+ from fastwam.datasets.lerobot.robot_video_dataset import DEFAULT_PROMPT
++from fastwam.models.wan22.device_placement import resolve_component_devices
+ from libero.libero import benchmark, get_libero_path
+ from action_ensembler import ActionEnsembler
+ 
+@@ -86,6 +87,42 @@ def _resolve_eval_device(cfg: DictConfig) -> str:
+     return "cuda" if torch.cuda.is_available() else "cpu"
+ 
+ 
++def _validate_multidevice_eval_settings(cfg: DictConfig, model_device: str) -> None:
++    placement = resolve_component_devices(
++        model_device,
++        video_device=cfg.EVALUATION.get("video_device"),
++        action_device=cfg.EVALUATION.get("action_device"),
++        vae_device=cfg.EVALUATION.get("vae_device"),
++        text_encoder_device=cfg.EVALUATION.get("text_encoder_device"),
++        text_encoder_devices=cfg.EVALUATION.get("text_encoder_devices"),
++    )
++    if not placement.is_multi_device:
++        return
++    if bool(cfg.EVALUATION.get("compile_action_infer", False)):
++        raise ValueError(
++            "Explicit multi-device placement requires "
++            "EVALUATION.compile_action_infer=false."
++        )
++    if bool(cfg.EVALUATION.get("visualize_future_video", False)):
++        raise NotImplementedError(
++            "Multi-device future-video/`infer_joint` evaluation is not implemented."
++        )
++
++    target = str(cfg.model.get("_target_", ""))
++    if target.endswith(("create_fastwam_joint", "create_fastwam_idm")):
++        raise NotImplementedError(
++            "Explicit multi-device placement supports only FastWAM base and "
++            "FastWAMOptionalIDM first-frame action inference."
++        )
++    if target.endswith("create_fastwam_optional_idm") and str(
++        cfg.EVALUATION.get("action_infer_mode", "idm")
++    ) != "first_frame":
++        raise NotImplementedError(
++            "Multi-device FastWAMOptionalIDM requires "
++            "EVALUATION.action_infer_mode=first_frame."
++        )
++
++
+ def _resolve_dataset_stats_path(cfg: DictConfig) -> Path:
+     explicit = cfg.EVALUATION.get("dataset_stats_path")
+     candidates: list[Path] = []
+@@ -461,6 +498,39 @@ def _get_max_steps(task_suite_name: str) -> int:
+     return suite_steps[task_suite_name]
+ 
+ 
++def _synchronize_cuda_devices() -> None:
++    if not torch.cuda.is_available():
++        return
++    for device_idx in range(torch.cuda.device_count()):
++        torch.cuda.synchronize(device_idx)
++
++
++def _gpu_peak_memory() -> dict[str, dict[str, int | str]]:
++    peaks: dict[str, dict[str, int | str]] = {}
++    if not torch.cuda.is_available():
++        return peaks
++    for device_idx in range(torch.cuda.device_count()):
++        props = torch.cuda.get_device_properties(device_idx)
++        peaks[f"cuda:{device_idx}"] = {
++            "name": props.name,
++            "peak_allocated_bytes": int(torch.cuda.max_memory_allocated(device_idx)),
++            "peak_reserved_bytes": int(torch.cuda.max_memory_reserved(device_idx)),
++        }
++    return peaks
++
++
++def _latency_summary(latencies_seconds: list[float]) -> dict[str, float | int | None]:
++    if not latencies_seconds:
++        return {"count": 0, "mean_ms": None, "p50_ms": None, "p95_ms": None}
++    values_ms = np.asarray(latencies_seconds, dtype=np.float64) * 1000.0
++    return {
++        "count": int(values_ms.size),
++        "mean_ms": float(np.mean(values_ms)),
++        "p50_ms": float(np.percentile(values_ms, 50)),
++        "p95_ms": float(np.percentile(values_ms, 95)),
++    }
++
++
+ def run_single_episode(
+     env,
+     initial_state,
+@@ -474,7 +544,7 @@ def run_single_episode(
+     input_w: int,
+     input_h: int,
+     model_device: str,
+-) -> tuple[bool, list, list[dict[str, Any]], Optional[float]]:
++) -> tuple[bool, list, list[dict[str, Any]], Optional[float], dict[str, Any]]:
+     max_steps = _get_max_steps(cfg.EVALUATION.task_suite_name)
+     replan_steps = int(cfg.EVALUATION.get("replan_steps", 5))
+     num_steps_wait = int(cfg.EVALUATION.get("num_steps_wait", 5))
+@@ -495,6 +565,9 @@ def run_single_episode(
+     current_predicted_future_clip: Optional[dict[str, Any]] = None
+     current_replan_step = 0
+     current_replan_idx = -1
++    replan_latencies_seconds: list[float] = []
++    wam_calls = 0
++    env_steps = 0
+ 
+     t = 0
+     done = False
+@@ -503,10 +576,13 @@ def run_single_episode(
+         pbar.update(1)
+         if t < num_steps_wait:
+             obs, _, done, _ = env.step(get_libero_dummy_action())
++            env_steps += 1
+             t += 1
+             continue
+ 
+         if len(pending_actions) == 0:
++            _synchronize_cuda_devices()
++            replan_started = time.perf_counter()
+             action_chunk, imgs, predicted_future_frames = _predict_action_chunk(
+                 obs=obs,
+                 task_description=task_description,
+@@ -518,6 +594,9 @@ def run_single_episode(
+                 input_h=input_h,
+                 model_device=model_device,
+             )
++            _synchronize_cuda_devices()
++            replan_latencies_seconds.append(time.perf_counter() - replan_started)
++            wam_calls += 1
+             if predicted_future_frames is not None:
+                 current_replan_idx += 1
+                 current_predicted_future_clip = {
+@@ -539,6 +618,7 @@ def run_single_episode(
+             replay_images.append(imgs.copy())
+ 
+         obs, _, done, _ = env.step(pending_actions.pop(0))
++        env_steps += 1
+         if visualize_future_video and current_predicted_future_clip is not None:
+             current_replan_step += 1
+             if current_replan_step in capture_steps:
+@@ -597,7 +677,21 @@ def run_single_episode(
+     episode_mean_psnr = (
+         float(np.mean(episode_future_clip_psnr)) if len(episode_future_clip_psnr) > 0 else None
+     )
+-    return bool(done), replay_images, predicted_future_video_clips, episode_mean_psnr
++    episode_metrics = {
++        "episode_index": int(episode_idx),
++        "episode_length": int(env_steps),
++        "success": bool(done),
++        "wam_calls": int(wam_calls),
++        "replan_latency": _latency_summary(replan_latencies_seconds),
++        "replan_latencies_ms": [float(value * 1000.0) for value in replan_latencies_seconds],
++    }
++    return (
++        bool(done),
++        replay_images,
++        predicted_future_video_clips,
++        episode_mean_psnr,
++        episode_metrics,
++    )
+ 
+ 
+ def run_single_task(
+@@ -615,19 +709,35 @@ def run_single_task(
+     model_device: str,
+ ) -> dict:
+     env, task_description = get_libero_env(task, LIBERO_ENV_RESOLUTION, cfg.get("seed"))
++    prompt = DEFAULT_PROMPT.format(task=task_description)
++    preencode_prompts = getattr(model, "preencode_prompts", None)
++    if preencode_prompts is not None:
++        preencode_prompts(
++            [prompt],
++            offload_text_encoder=bool(
++                cfg.EVALUATION.get("offload_text_encoder_after_prompt_cache", False)
++            ),
++        )
+     visualize_future_video = bool(cfg.EVALUATION.get("visualize_future_video", False))
+     results = {
+         "successes": 0,
+         "failure_episodes": [],
+         "success_episodes": [],
+         "task_description": task_description,
++        "episode_metrics": [],
+     }
+     if visualize_future_video:
+         results["episode_future_video_psnr"] = []
+         results["future_video_psnr_mean"] = None
+ 
+     for trial_idx in range(int(cfg.EVALUATION.num_trials)):
+-        success, replay_images, predicted_future_video_clips, episode_mean_psnr = run_single_episode(
++        (
++            success,
++            replay_images,
++            predicted_future_video_clips,
++            episode_mean_psnr,
++            episode_metrics,
++        ) = run_single_episode(
+             env=env,
+             initial_state=initial_states[trial_idx],
+             task_description=task_description,
+@@ -640,6 +750,7 @@ def run_single_task(
+             input_h=input_h,
+             model_device=model_device,
+         )
++        results["episode_metrics"].append(episode_metrics)
+         if success:
+             results["successes"] += 1
+             results["success_episodes"].append(trial_idx)
+@@ -695,6 +806,18 @@ def run_single_task(
+         valid_episode_psnr = [x for x in results["episode_future_video_psnr"] if x is not None]
+         if len(valid_episode_psnr) > 0:
+             results["future_video_psnr_mean"] = float(np.mean(valid_episode_psnr))
++    all_replan_latencies_ms = [
++        latency
++        for episode in results["episode_metrics"]
++        for latency in episode["replan_latencies_ms"]
++    ]
++    results["wam_calls"] = int(
++        sum(episode["wam_calls"] for episode in results["episode_metrics"])
++    )
++    results["replan_latency"] = _latency_summary(
++        [latency / 1000.0 for latency in all_replan_latencies_ms]
++    )
++    results["gpu_peak_memory"] = _gpu_peak_memory()
+     return results
+ 
+ 
+@@ -762,6 +885,9 @@ def _run_task_to_file(
+     }
+     if worker_id is not None:
+         results["worker_id"] = worker_id
++    physical_gpu_group = os.environ.get("LIBERO_WORKER_PHYSICAL_GPUS")
++    if physical_gpu_group:
++        results["physical_gpu_group"] = physical_gpu_group.split(",")
+     results.update(
+         run_single_task(
+             task=task,
+@@ -877,12 +1003,40 @@ def eval_single_process(cfg: DictConfig):
+             "Only env_num=1 is supported in eval_libero_single.py. "
+             "Use run_libero_manager.py for multi-GPU task parallelism."
+         )
++    if os.environ.get("LIBERO_WORKER_MODE") == "1" and bool(
++        cfg.EVALUATION.get("offload_text_encoder_after_prompt_cache", False)
++    ):
++        raise ValueError(
++            "Worker mode may execute multiple tasks, so it cannot offload UMT5 after "
++            "caching only the first task prompt. Pre-encode the complete worker task "
++            "set before enabling offload."
++        )
+ 
+     model_device = _resolve_eval_device(cfg)
++    _validate_multidevice_eval_settings(cfg, model_device)
+     model_dtype = _mixed_precision_to_model_dtype(cfg.get("mixed_precision", "bf16"))
+-    model = instantiate(cfg.model, model_dtype=model_dtype, device=model_device)
++    model = instantiate(
++        cfg.model,
++        model_dtype=model_dtype,
++        device=model_device,
++        video_device=cfg.EVALUATION.get("video_device"),
++        action_device=cfg.EVALUATION.get("action_device"),
++        vae_device=cfg.EVALUATION.get("vae_device"),
++        text_encoder_device=cfg.EVALUATION.get("text_encoder_device"),
++        text_encoder_devices=cfg.EVALUATION.get("text_encoder_devices"),
++    )
+     _load_model_checkpoint(model, str(cfg.ckpt))
+-    model = model.to(model_device).eval()
++    if getattr(model, "is_multi_device", False):
++        logging.info(
++            "Using explicit component placement: video=%s action=%s vae=%s text=%s",
++            model.video_device,
++            model.action_device,
++            model.vae_device,
++            model.text_encoder_devices,
++        )
++        model = model.eval()
++    else:
++        model = model.to(model_device).eval()
+ 
+     dataset_stats_path = _resolve_dataset_stats_path(cfg)
+     dataset_stats = load_dataset_stats_from_json(str(dataset_stats_path))
+diff --git a/experiments/libero/run_libero_manager.py b/experiments/libero/run_libero_manager.py
+index 7ccd966..80c0211 100644
+--- a/experiments/libero/run_libero_manager.py
++++ b/experiments/libero/run_libero_manager.py
+@@ -1,5 +1,6 @@
+ """Run original LIBERO tasks with one persistent model worker per GPU."""
+ 
++import json
+ import os
+ import shlex
+ import shutil
+@@ -21,6 +22,7 @@ if str(project_root) not in sys.path:
+ 
+ from experiments.libero.summarize_results import summarize_results
+ from experiments.libero.worker_pool import pending_task_count, read_worker_status, requeue_task
++from experiments.libero.worker_launch import resolve_worker_launches
+ 
+ 
+ def create_task_file(output_file: Path, task_suite_names: list[str]) -> Path:
+@@ -100,13 +102,17 @@ def run_evaluation(
+     task_choice: str,
+     ckpt: str,
+     num_gpus: int,
++    gpu_groups,
+     num_trials: int,
+     output_dir: Path,
+     extra_overrides: list[str],
+     config_name: str,
+ ) -> None:
+-    if num_gpus <= 0:
+-        raise ValueError("MULTIRUN.num_gpus must be positive.")
++    launches = resolve_worker_launches(
++        num_gpus=num_gpus,
++        gpu_groups=gpu_groups,
++        cuda_visible_devices=os.environ.get("CUDA_VISIBLE_DEVICES"),
++    )
+ 
+     output_dir = output_dir.resolve()
+     output_dir.mkdir(parents=True, exist_ok=True)
+@@ -146,21 +152,6 @@ def run_evaluation(
+     for status_file in status_dir.glob("worker_*.json"):
+         status_file.unlink()
+ 
+-    if "CUDA_VISIBLE_DEVICES" in os.environ:
+-        visible_gpus = [
+-            gpu.strip()
+-            for gpu in os.environ["CUDA_VISIBLE_DEVICES"].split(",")
+-            if gpu.strip()
+-        ]
+-        if len(visible_gpus) < num_gpus:
+-            raise ValueError(
+-                f"MULTIRUN.num_gpus={num_gpus}, but CUDA_VISIBLE_DEVICES only has "
+-                f"{len(visible_gpus)} entries."
+-            )
+-        gpu_ids = visible_gpus[:num_gpus]
+-    else:
+-        gpu_ids = [str(gpu_id) for gpu_id in range(num_gpus)]
+-
+     root_dir = str(project_root)
+     extra_args_display = shlex.join(extra_overrides) if extra_overrides else ""
+     base_env = os.environ.copy()
+@@ -168,7 +159,13 @@ def run_evaluation(
+     print("\nStarting persistent LIBERO worker pool...")
+     print(f"task: {task_choice}")
+     print(f"checkpoint: {ckpt}")
+-    print(f"GPUs: {','.join(gpu_ids)}")
++    print(
++        "worker GPU groups: "
++        + ", ".join(
++            f"{launch.worker_id}=[{launch.cuda_visible_devices}]"
++            for launch in launches
++        )
++    )
+     print(f"trials per task: {num_trials}")
+     print(f"task list: {task_file}")
+     print(f"output: {output_dir}")
+@@ -176,34 +173,40 @@ def run_evaluation(
+         print(f"forwarded overrides: {extra_args_display}")
+     print("recovery: quarantine a crashed GPU and requeue its unfinished task")
+ 
++    worker_group_metadata = [
++        {
++            "worker_id": launch.worker_id,
++            "physical_gpus": list(launch.physical_gpus),
++            "cuda_visible_devices": launch.cuda_visible_devices,
++            "component_overrides": list(launch.component_overrides),
++        }
++        for launch in launches
++    ]
++    (output_dir / "worker_gpu_groups.json").write_text(
++        json.dumps(worker_group_metadata, indent=2) + "\n", encoding="utf-8"
++    )
++
+     workers: dict[str, tuple[subprocess.Popen, Path, TextIO]] = {}
+-    for gpu_id in gpu_ids:
+-        log_file = log_dir / f"worker_{gpu_id}.log"
+-        worker_env = base_env.copy()
+-        worker_env.update(
+-            {
+-                "CUDA_VISIBLE_DEVICES": gpu_id,
+-                "LIBERO_WORKER_MODE": "1",
+-                "LIBERO_WORKER_ID": gpu_id,
+-                "LIBERO_WORKER_PENDING_FILE": str(pending_file),
+-                "LIBERO_WORKER_LOCK_FILE": str(lock_file),
+-                "LIBERO_WORKER_STOP_FILE": str(stop_file),
+-                "LIBERO_WORKER_STATUS_DIR": str(status_dir),
+-                "LIBERO_WORKER_FAILED_FILE": str(failed_file),
+-            }
++    for launch in launches:
++        worker_id = launch.worker_id
++        log_file = log_dir / f"worker_{worker_id}.log"
++        worker_env = launch.build_environment(
++            base_environment=base_env,
++            pending_file=str(pending_file),
++            lock_file=str(lock_file),
++            stop_file=str(stop_file),
++            status_dir=str(status_dir),
++            failed_file=str(failed_file),
++        )
++        cmd = launch.build_command(
++            python_executable=sys.executable,
++            config_name=config_name,
++            task_choice=task_choice,
++            ckpt=ckpt,
++            num_trials=num_trials,
++            output_dir=str(output_dir),
++            extra_overrides=extra_overrides,
+         )
+-        cmd = [
+-            sys.executable,
+-            "experiments/libero/eval_libero_single.py",
+-            "--config-name",
+-            config_name,
+-            f"task={task_choice}",
+-            f"ckpt={ckpt}",
+-            f"gpu_id={gpu_id}",
+-            f"EVALUATION.num_trials={num_trials}",
+-            f"EVALUATION.output_dir={output_dir}",
+-            *extra_overrides,
+-        ]
+         log_handle = log_file.open("w", encoding="utf-8")
+         process = subprocess.Popen(
+             cmd,
+@@ -213,8 +216,11 @@ def run_evaluation(
+             stderr=subprocess.STDOUT,
+             text=True,
+         )
+-        workers[gpu_id] = (process, log_file, log_handle)
+-        print(f"started worker GPU{gpu_id}: {log_file}")
++        workers[worker_id] = (process, log_file, log_handle)
++        print(
++            f"started worker {worker_id} on physical GPUs "
++            f"[{launch.cuda_visible_devices}]: {log_file}"
++        )
+ 
+     status_interval = int(os.environ.get("STATUS_INTERVAL", "60"))
+     monitor_interval = int(os.environ.get("MONITORING_INTERVAL", "5"))
+@@ -223,29 +229,34 @@ def run_evaluation(
+ 
+     try:
+         while workers:
+-            for gpu_id, (process, log_file, log_handle) in list(workers.items()):
++            for worker_id, (process, log_file, log_handle) in list(workers.items()):
+                 returncode = process.poll()
+                 if returncode is None:
+                     continue
+                 log_handle.close()
+-                del workers[gpu_id]
++                del workers[worker_id]
+ 
+                 if returncode == 0 and stop_file.exists():
+                     continue
+ 
+-                current_task = _worker_current_task(status_dir, gpu_id)
++                current_task = _worker_current_task(status_dir, worker_id)
+                 if current_task is not None and not _task_result_exists(
+                     output_dir, current_task[0], current_task[1]
+                 ):
+                     if requeue_task(pending_file, lock_file, current_task):
+-                        print(f"requeued GPU{gpu_id} task: {current_task[0]},{current_task[1]}")
++                        print(
++                            f"requeued worker {worker_id} task: "
++                            f"{current_task[0]},{current_task[1]}"
++                        )
+ 
+                 if failed_file.stat().st_size > 0:
+-                    terminal_error = f"worker GPU{gpu_id} reported a task error; log: {log_file}"
++                    terminal_error = (
++                        f"worker {worker_id} reported a task error; log: {log_file}"
++                    )
+                     break
+                 print(
+-                    f"worker GPU{gpu_id} exited with code {returncode}; "
+-                    f"GPU{gpu_id} is quarantined for this run. Log: {log_file}"
++                    f"worker {worker_id} exited with code {returncode}; "
++                    f"its GPU group is quarantined for this run. Log: {log_file}"
+                 )
+ 
+             if terminal_error is not None:
+@@ -253,7 +264,10 @@ def run_evaluation(
+ 
+             pending = pending_task_count(pending_file, lock_file)
+             if pending == 0 and workers:
+-                statuses = [read_worker_status(status_dir, gpu_id) for gpu_id in workers]
++                statuses = [
++                    read_worker_status(status_dir, worker_id)
++                    for worker_id in workers
++                ]
+                 if all(status is not None and status["status"] == "idle" for status in statuses):
+                     stop_file.write_text("done\n", encoding="utf-8")
+ 
+@@ -331,6 +345,7 @@ def main(cfg: DictConfig):
+         task_choice=task_choice,
+         ckpt=str(cfg.ckpt),
+         num_gpus=int(manager.num_gpus),
++        gpu_groups=manager.get("gpu_groups"),
+         num_trials=int(cfg.EVALUATION.num_trials),
+         output_dir=output_dir,
+         extra_overrides=collect_worker_overrides(),
+diff --git a/experiments/libero/summarize_results.py b/experiments/libero/summarize_results.py
+index 64b90bc..4119063 100644
+--- a/experiments/libero/summarize_results.py
++++ b/experiments/libero/summarize_results.py
+@@ -86,7 +86,8 @@ def summarize_results(output_dir, *, ckpt=None, config=None):
+                 'duration': result['duration'],
+                 'total_episodes': result['total_episodes'],
+                 'successes': result['successes'],
+-                'task_description': result['task_description'] if 'task_description' in result else ''
++                'task_description': result['task_description'] if 'task_description' in result else '',
++                'physical_gpu_group': result.get('physical_gpu_group', []),
+             }
+             if 'future_video_psnr_mean' in result:
+                 task_result['future_video_psnr_mean'] = (
+@@ -208,6 +209,7 @@ def summarize_results(output_dir, *, ckpt=None, config=None):
+     task_success_data = {
+         'Task': [],
+         'Description': [],
++        'Physical GPU Group': [],
+         'Success Rate (%)': []
+     }
+     if has_psnr_metric:
+@@ -231,6 +233,9 @@ def summarize_results(output_dir, *, ckpt=None, config=None):
+             task_success_data['Description'].append(
+                 result['task_description'] if 'task_description' in result else ''
+             )
++            task_success_data['Physical GPU Group'].append(
++                ','.join(result['physical_gpu_group'])
++            )
+             task_success_data['Success Rate (%)'].append(f"{result['success_rate']:.2f}")
+             if has_psnr_metric:
+                 psnr = result['future_video_psnr_mean'] if 'future_video_psnr_mean' in result else None
+diff --git a/experiments/libero/worker_launch.py b/experiments/libero/worker_launch.py
+new file mode 100644
+index 0000000..cadeb41
+--- /dev/null
++++ b/experiments/libero/worker_launch.py
+@@ -0,0 +1,183 @@
++from __future__ import annotations
++
++from collections.abc import Mapping, Sequence
++from dataclasses import dataclass
++
++
++_MULTIGPU_OVERRIDES = (
++    "EVALUATION.device=cuda:0",
++    "EVALUATION.video_device=cuda:0",
++    "EVALUATION.action_device=cuda:1",
++    "EVALUATION.vae_device=cuda:1",
++    "EVALUATION.text_encoder_device=null",
++    "EVALUATION.text_encoder_devices=[cuda:2,cuda:3]",
++    "EVALUATION.compile_action_infer=false",
++)
++
++
++def _override_key(override: str) -> str:
++    return override.split("=", 1)[0].lstrip("+~")
++
++
++@dataclass(frozen=True)
++class WorkerLaunch:
++    physical_gpus: tuple[str, ...]
++
++    @property
++    def worker_id(self) -> str:
++        if len(self.physical_gpus) == 1:
++            return self.physical_gpus[0]
++        return "group_" + "-".join(self.physical_gpus)
++
++    @property
++    def cuda_visible_devices(self) -> str:
++        return ",".join(self.physical_gpus)
++
++    @property
++    def result_gpu_id(self) -> str:
++        return self.physical_gpus[0]
++
++    @property
++    def component_overrides(self) -> tuple[str, ...]:
++        return _MULTIGPU_OVERRIDES if len(self.physical_gpus) > 1 else ()
++
++    def merge_overrides(self, extra_overrides: Sequence[str]) -> list[str]:
++        if not self.component_overrides:
++            return list(extra_overrides)
++        required = {
++            _override_key(override): override
++            for override in self.component_overrides
++        }
++        forwarded = []
++        for override in extra_overrides:
++            key = _override_key(override)
++            if key not in required:
++                forwarded.append(override)
++                continue
++            if override != required[key]:
++                raise ValueError(
++                    f"Worker group {self.physical_gpus} requires `{required[key]}`, "
++                    f"but received conflicting override `{override}`."
++                )
++        return [*forwarded, *self.component_overrides]
++
++    def build_command(
++        self,
++        *,
++        python_executable: str,
++        config_name: str,
++        task_choice: str,
++        ckpt: str,
++        num_trials: int,
++        output_dir: str,
++        extra_overrides: Sequence[str],
++    ) -> list[str]:
++        return [
++            python_executable,
++            "experiments/libero/eval_libero_single.py",
++            "--config-name",
++            config_name,
++            f"task={task_choice}",
++            f"ckpt={ckpt}",
++            f"gpu_id={self.result_gpu_id}",
++            f"EVALUATION.num_trials={num_trials}",
++            f"EVALUATION.output_dir={output_dir}",
++            *self.merge_overrides(extra_overrides),
++        ]
++
++    def build_environment(
++        self,
++        *,
++        base_environment: Mapping[str, str],
++        pending_file: str,
++        lock_file: str,
++        stop_file: str,
++        status_dir: str,
++        failed_file: str,
++    ) -> dict[str, str]:
++        environment = dict(base_environment)
++        environment.update(
++            {
++                "CUDA_VISIBLE_DEVICES": self.cuda_visible_devices,
++                "LIBERO_WORKER_MODE": "1",
++                "LIBERO_WORKER_ID": self.worker_id,
++                "LIBERO_WORKER_PHYSICAL_GPUS": self.cuda_visible_devices,
++                "LIBERO_WORKER_PENDING_FILE": pending_file,
++                "LIBERO_WORKER_LOCK_FILE": lock_file,
++                "LIBERO_WORKER_STOP_FILE": stop_file,
++                "LIBERO_WORKER_STATUS_DIR": status_dir,
++                "LIBERO_WORKER_FAILED_FILE": failed_file,
++            }
++        )
++        return environment
++
++
++def _available_gpu_ids(num_gpus: int, cuda_visible_devices: str | None) -> list[str]:
++    if num_gpus <= 0:
++        raise ValueError("MULTIRUN.num_gpus must be positive.")
++    if cuda_visible_devices is None:
++        return [str(index) for index in range(num_gpus)]
++
++    entries = [entry.strip() for entry in cuda_visible_devices.split(",")]
++    if not entries or any(not entry for entry in entries):
++        raise ValueError("CUDA_VISIBLE_DEVICES contains an empty GPU identifier.")
++    if len(entries) != len(set(entries)):
++        raise ValueError("CUDA_VISIBLE_DEVICES contains duplicate GPU identifiers.")
++    if len(entries) < num_gpus:
++        raise ValueError(
++            f"MULTIRUN.num_gpus={num_gpus}, but CUDA_VISIBLE_DEVICES only has "
++            f"{len(entries)} entries."
++        )
++    return entries[:num_gpus]
++
++
++def resolve_worker_launches(
++    *,
++    num_gpus: int,
++    gpu_groups: Sequence[Sequence[int | str]] | None,
++    cuda_visible_devices: str | None,
++) -> list[WorkerLaunch]:
++    available = _available_gpu_ids(num_gpus, cuda_visible_devices)
++    if gpu_groups is None:
++        return [WorkerLaunch((gpu_id,)) for gpu_id in available]
++    if isinstance(gpu_groups, (str, bytes)) or not isinstance(gpu_groups, Sequence):
++        raise TypeError("MULTIRUN.gpu_groups must be a list of GPU-id lists.")
++    if len(gpu_groups) == 0:
++        raise ValueError("MULTIRUN.gpu_groups cannot be empty.")
++
++    launches = []
++    used = set()
++    for group_index, raw_group in enumerate(gpu_groups):
++        if isinstance(raw_group, (str, bytes)) or not isinstance(raw_group, Sequence):
++            raise TypeError(f"gpu_groups[{group_index}] must be a list of GPU ids.")
++        if len(raw_group) == 0:
++            raise ValueError(f"gpu_groups[{group_index}] cannot be empty.")
++        if len(raw_group) != 4:
++            raise ValueError(
++                f"gpu_groups[{group_index}] has {len(raw_group)} GPUs; the current "
++                "FastWAM placement requires exactly four."
++            )
++
++        group = []
++        for raw_gpu in raw_group:
++            if isinstance(raw_gpu, bool):
++                raise TypeError("GPU identifiers must be non-negative integers, not bool.")
++            if isinstance(raw_gpu, int):
++                gpu_id = str(raw_gpu)
++            elif isinstance(raw_gpu, str) and raw_gpu.strip().isdigit():
++                gpu_id = str(int(raw_gpu.strip()))
++            else:
++                raise TypeError(
++                    f"Invalid GPU identifier {raw_gpu!r}; expected a non-negative integer."
++                )
++            if gpu_id not in available:
++                raise ValueError(
++                    f"GPU {gpu_id} in gpu_groups[{group_index}] is outside the "
++                    f"available set {available}."
++                )
++            if gpu_id in used:
++                raise ValueError(f"GPU {gpu_id} appears in more than one worker group.")
++            used.add(gpu_id)
++            group.append(gpu_id)
++        launches.append(WorkerLaunch(tuple(group)))
++    return launches
+diff --git a/src/fastwam/models/wan22/device_placement.py b/src/fastwam/models/wan22/device_placement.py
+new file mode 100644
+index 0000000..9548b98
+--- /dev/null
++++ b/src/fastwam/models/wan22/device_placement.py
+@@ -0,0 +1,84 @@
++from __future__ import annotations
++
++from dataclasses import dataclass
++from typing import Iterable, Sequence
++
++import torch
++
++
++@dataclass(frozen=True)
++class ComponentDevices:
++    default: torch.device
++    video: torch.device
++    action: torch.device
++    vae: torch.device
++    text: tuple[torch.device, ...]
++
++    @property
++    def is_multi_device(self) -> bool:
++        return len({self.video, self.action, self.vae, *self.text}) > 1
++
++
++def resolve_component_devices(
++    device: str | torch.device,
++    *,
++    video_device: str | torch.device | None = None,
++    action_device: str | torch.device | None = None,
++    vae_device: str | torch.device | None = None,
++    text_encoder_device: str | torch.device | None = None,
++    text_encoder_devices: Sequence[str | torch.device] | None = None,
++) -> ComponentDevices:
++    default = torch.device(device)
++    if text_encoder_device is not None and text_encoder_devices is not None:
++        raise ValueError(
++            "Set only one of `text_encoder_device` and `text_encoder_devices`."
++        )
++    if text_encoder_devices is None:
++        text = (torch.device(text_encoder_device or default),)
++    else:
++        text = tuple(torch.device(item) for item in text_encoder_devices)
++        if len(text) != 2:
++            raise ValueError(
++                "`text_encoder_devices` is the two-way partition option and must "
++                "contain exactly two devices; use `text_encoder_device` for one."
++            )
++        if text[0] == text[1]:
++            raise ValueError("Two-way T5 partitioning requires two distinct devices.")
++
++    return ComponentDevices(
++        default=default,
++        video=torch.device(video_device or default),
++        action=torch.device(action_device or default),
++        vae=torch.device(vae_device or default),
++        text=text,
++    )
++
++
++def move_tensor_sequence(
++    tensors: Iterable[torch.Tensor],
++    device: str | torch.device,
++    *,
++    non_blocking: bool = True,
++) -> list[torch.Tensor]:
++    target = torch.device(device)
++    return [tensor.to(device=target, non_blocking=non_blocking) for tensor in tensors]
++
++
++def require_multidevice_eager(
++    *, is_multi_device: bool, compile_action_infer: bool
++) -> None:
++    if is_multi_device and compile_action_infer:
++        raise ValueError(
++            "Multi-device first-frame inference requires "
++            "`compile_action_infer=False`."
++        )
++
++
++def reject_unsupported_multidevice_path(
++    *, is_multi_device: bool, path: str
++) -> None:
++    if is_multi_device:
++        raise NotImplementedError(
++            f"Multi-device `{path}` is not implemented. This adapter supports only "
++            "FastWAM base and FastWAMOptionalIDM action_infer_mode='first_frame'."
++        )
+diff --git a/src/fastwam/models/wan22/fastwam.py b/src/fastwam/models/wan22/fastwam.py
+index f312ea0..22c8b21 100644
+--- a/src/fastwam/models/wan22/fastwam.py
++++ b/src/fastwam/models/wan22/fastwam.py
+@@ -8,6 +8,12 @@ from PIL import Image
+ from fastwam.utils.logging_config import get_logger
+ 
+ from .action_dit import ActionDiT
++from .device_placement import (
++    move_tensor_sequence,
++    reject_unsupported_multidevice_path,
++    require_multidevice_eager,
++    resolve_component_devices,
++)
+ from .helpers.loader import load_wan22_ti2v_5b_components
+ from .mot import MoT
+ from .schedulers.scheduler_continuous import WanContinuousFlowMatchScheduler
+@@ -29,6 +35,11 @@ class FastWAM(torch.nn.Module):
+         text_dim: Optional[int] = None,
+         proprio_dim: Optional[int] = None,
+         device: str = "cpu",
++        video_device: str | None = None,
++        action_device: str | None = None,
++        vae_device: str | None = None,
++        text_encoder_device: str | None = None,
++        text_encoder_devices: Sequence[str] | None = None,
+         torch_dtype: torch.dtype = torch.float32,
+         video_train_shift: float = 5.0,
+         video_infer_shift: float = 5.0,
+@@ -56,8 +67,25 @@ class FastWAM(torch.nn.Module):
+             text_dim = int(self.text_encoder.dim)
+         self.text_dim = int(text_dim)
+         self.proprio_dim = None if proprio_dim is None else int(proprio_dim)
++        placement = resolve_component_devices(
++            device,
++            video_device=video_device,
++            action_device=action_device,
++            vae_device=vae_device,
++            text_encoder_device=text_encoder_device,
++            text_encoder_devices=text_encoder_devices,
++        )
++        self.video_device = placement.video
++        self.action_device = placement.action
++        self.vae_device = placement.vae
++        self.text_encoder_device = placement.text[0]
++        self.text_encoder_devices = placement.text
++        self.text_encoder_output_device = placement.text[-1]
++        self.is_multi_device = placement.is_multi_device
+         if self.proprio_dim is not None:
+-            self.proprio_encoder = nn.Linear(self.proprio_dim, self.text_dim).to(torch_dtype)
++            self.proprio_encoder = nn.Linear(self.proprio_dim, self.text_dim).to(
++                device=self.action_device, dtype=torch_dtype
++            )
+         else:
+             self.proprio_encoder = None
+ 
+@@ -81,19 +109,28 @@ class FastWAM(torch.nn.Module):
+         self.train_scheduler = self.train_video_scheduler
+         self.infer_scheduler = self.infer_video_scheduler
+ 
+-        self.device = torch.device(device)
++        # The historical `device` attribute remains the action/scheduler device.
++        self.device = self.action_device
+         self.torch_dtype = torch_dtype
+         self.loss_lambda_video = float(loss_lambda_video)
+         self.loss_lambda_action = float(loss_lambda_action)
+         self.compile_training_denoise = bool(compile_training_denoise)
+         self.mot.compile_training_layers = self.compile_training_denoise
+ 
+-        self.to(self.device)
++        self._prompt_context_cache: dict[str, tuple[torch.Tensor, torch.Tensor]] = {}
++        self._text_encoder_offloaded = False
++        if not self.is_multi_device:
++            self.to(self.device)
+ 
+     @classmethod
+     def from_wan22_pretrained(
+         cls,
+         device: str = "cuda",
++        video_device: str | None = None,
++        action_device: str | None = None,
++        vae_device: str | None = None,
++        text_encoder_device: str | None = None,
++        text_encoder_devices: Sequence[str] | None = None,
+         torch_dtype: torch.dtype = torch.bfloat16,
+         model_id: str = "Wan-AI/Wan2.2-TI2V-5B",
+         tokenizer_model_id: str = "Wan-AI/Wan2.1-T2V-1.3B",
+@@ -121,8 +158,29 @@ class FastWAM(torch.nn.Module):
+         if "text_dim" not in video_dit_config:
+             raise ValueError("`video_dit_config['text_dim']` is required for FastWAM.")
+ 
++        placement = resolve_component_devices(
++            device,
++            video_device=video_device,
++            action_device=action_device,
++            vae_device=vae_device,
++            text_encoder_device=text_encoder_device,
++            text_encoder_devices=text_encoder_devices,
++        )
++        video_device = str(placement.video)
++        action_device = str(placement.action)
++        vae_device = str(placement.vae)
++        resolved_text_devices = tuple(str(item) for item in placement.text)
++
+         components = load_wan22_ti2v_5b_components(
+             device=device,
++            video_device=video_device,
++            vae_device=vae_device,
++            text_encoder_device=(
++                resolved_text_devices[0] if len(resolved_text_devices) == 1 else None
++            ),
++            text_encoder_devices=(
++                resolved_text_devices if len(resolved_text_devices) == 2 else None
++            ),
+             torch_dtype=torch_dtype,
+             model_id=model_id,
+             tokenizer_model_id=tokenizer_model_id,
+@@ -138,7 +196,7 @@ class FastWAM(torch.nn.Module):
+             action_dit_config=action_dit_config,
+             action_dit_pretrained_path=action_dit_pretrained_path,
+             skip_dit_load_from_pretrain=skip_dit_load_from_pretrain,
+-            device=device,
++            device=action_device,
+             torch_dtype=torch_dtype,
+         )
+         if int(action_expert.num_heads) != int(video_expert.num_heads):
+@@ -163,6 +221,15 @@ class FastWAM(torch.nn.Module):
+             text_dim=int(video_dit_config["text_dim"]),
+             proprio_dim=proprio_dim,
+             device=device,
++            video_device=video_device,
++            action_device=action_device,
++            vae_device=vae_device,
++            text_encoder_device=(
++                resolved_text_devices[0] if len(resolved_text_devices) == 1 else None
++            ),
++            text_encoder_devices=(
++                resolved_text_devices if len(resolved_text_devices) == 2 else None
++            ),
+             torch_dtype=torch_dtype,
+             video_train_shift=video_train_shift,
+             video_infer_shift=video_infer_shift,
+@@ -186,6 +253,11 @@ class FastWAM(torch.nn.Module):
+         return model
+ 
+     def to(self, *args, **kwargs):
++        if getattr(self, "is_multi_device", False):
++            raise RuntimeError(
++                "FastWAM uses explicit multi-device placement; a whole-model `.to(...)` "
++                "would destroy that placement. Move individual components instead."
++            )
+         super().to(*args, **kwargs)
+         self.mot.to(*args, **kwargs)
+         if self.text_encoder is not None:
+@@ -204,22 +276,80 @@ class FastWAM(torch.nn.Module):
+         return height, width, num_frames
+ 
+     @torch.no_grad()
+-    def encode_prompt(self, prompt: Union[str, Sequence[str]]):
++    def encode_prompt(
++        self,
++        prompt: Union[str, Sequence[str]],
++        output_device: str | torch.device | None = None,
++    ):
++        target_device = torch.device(output_device or self.device)
++        cache_key = prompt if isinstance(prompt, str) else None
++        if cache_key is not None and cache_key in self._prompt_context_cache:
++            cached_emb, cached_mask = self._prompt_context_cache[cache_key]
++            return (
++                cached_emb.to(device=target_device, dtype=self.torch_dtype),
++                cached_mask.to(device=target_device, dtype=torch.bool),
++            )
++        if self._text_encoder_offloaded:
++            raise RuntimeError(
++                "Prompt cache miss after text encoder offload. Pre-encode every "
++                "required task prompt before calling `offload_text_encoder_after_cache()`."
++            )
+         if self.text_encoder is None or self.tokenizer is None:
+             raise ValueError(
+                 "Prompt encoding requires loaded text encoder/tokenizer. "
+                 "Set `load_text_encoder=true` or provide precomputed `context/context_mask`."
+             )
+         ids, mask = self.tokenizer(prompt, return_mask=True, add_special_tokens=True)
+-        ids = ids.to(self.device)
+-        mask = mask.to(self.device, dtype=torch.bool)
++        ids = ids.to(self.text_encoder_device)
++        mask = mask.to(self.text_encoder_device, dtype=torch.bool)
+         prompt_emb = self.text_encoder(ids, mask)
+         # FIXME: original implementation's zero padding is visible in cross-attn.
+         seq_lens = mask.gt(0).sum(dim=1).long()
+         for i, v in enumerate(seq_lens):
+             prompt_emb[i, v:] = 0
+         mask = torch.ones_like(mask)
+-        return prompt_emb.to(device=self.device), mask
++        if cache_key is not None:
++            self._prompt_context_cache[cache_key] = (
++                prompt_emb.detach().to(device="cpu", dtype=self.torch_dtype),
++                mask.detach().to(device="cpu", dtype=torch.bool),
++            )
++        return (
++            prompt_emb.to(device=target_device, dtype=self.torch_dtype),
++            mask.to(device=target_device, dtype=torch.bool),
++        )
++
++    @torch.no_grad()
++    def preencode_prompts(
++        self,
++        prompts: Sequence[str],
++        *,
++        offload_text_encoder: bool = False,
++    ) -> None:
++        unique_prompts = tuple(dict.fromkeys(str(prompt) for prompt in prompts))
++        if not unique_prompts:
++            raise ValueError("`prompts` must contain at least one prompt.")
++        for prompt in unique_prompts:
++            self.encode_prompt(prompt, output_device="cpu")
++        if offload_text_encoder:
++            self.offload_text_encoder_after_cache()
++
++    def offload_text_encoder_after_cache(self) -> None:
++        if not self._prompt_context_cache:
++            raise RuntimeError("Refusing to offload the text encoder with an empty prompt cache.")
++        if self.text_encoder is None:
++            raise RuntimeError("No text encoder is loaded.")
++        offload_partition = getattr(
++            self.text_encoder, "offload_inference_partition", None
++        )
++        if len(self.text_encoder_devices) == 2:
++            if offload_partition is None:
++                raise TypeError(
++                    "The partitioned text encoder lacks `offload_inference_partition()`."
++                )
++            offload_partition()
++        else:
++            self.text_encoder.to(device="cpu")
++        self._text_encoder_offloaded = True
+ 
+     def _append_proprio_to_context(
+         self,
+@@ -235,8 +365,10 @@ class FastWAM(torch.nn.Module):
+             raise ValueError(
+                 f"`proprio` last dim must be {self.proprio_dim}, got {proprio.shape[1]}"
+             )
++        context = context.to(device=self.action_device, dtype=self.torch_dtype)
++        context_mask = context_mask.to(device=self.action_device, dtype=torch.bool)
+         proprio_token = self.proprio_encoder(
+-            proprio.to(device=self.device, dtype=context.dtype).unsqueeze(1)
++            proprio.to(device=self.action_device, dtype=context.dtype).unsqueeze(1)
+         ).to(dtype=context.dtype) # [B, 1, D]
+         proprio_mask = torch.ones((context_mask.shape[0], 1), dtype=torch.bool, device=context_mask.device)
+         return (
+@@ -255,7 +387,7 @@ class FastWAM(torch.nn.Module):
+                 fullgraph=True,
+             )
+         return self._vae_encode_compiled(
+-            video_tensor.to(self.device),
++            video_tensor.to(self.vae_device),
+             self.vae.scale,
+         ).clone()
+ 
+@@ -269,11 +401,11 @@ class FastWAM(torch.nn.Module):
+             )
+         if tiled:
+             raise NotImplementedError("Batched VAE image encoding does not support tiled encoding.")
+-        image = input_image.to(device=self.device)[0].unsqueeze(1)
++        image = input_image.to(device=self.vae_device)[0].unsqueeze(1)
+         return self.vae.model.encode(image.unsqueeze(0), self.vae.scale)
+ 
+     def _decode_latents(self, latents, tiled=False, tile_size=(30, 52), tile_stride=(15, 26)):
+-        video_tensor = self.vae.decode(latents, device=self.device, tiled=tiled, tile_size=tile_size, tile_stride=tile_stride)
++        video_tensor = self.vae.decode(latents, device=self.vae_device, tiled=tiled, tile_size=tile_size, tile_stride=tile_stride)
+         video_tensor = video_tensor.squeeze(0).detach().float().clamp(-1, 1)
+         video_tensor = ((video_tensor + 1.0) * 127.5).to(torch.uint8).cpu()
+         frames = []
+@@ -789,6 +921,9 @@ class FastWAM(torch.nn.Module):
+         compile_action_infer: bool = False,
+     ) -> dict[str, Any]:
+         self.eval()
++        reject_unsupported_multidevice_path(
++            is_multi_device=self.is_multi_device, path="infer_joint"
++        )
+         if test_action_with_infer_action:
+             if seed is None:
+                 raise ValueError("`test_action_with_infer_action=True` requires non-null `seed`.")
+@@ -843,7 +978,7 @@ class FastWAM(torch.nn.Module):
+                 raise ValueError(f"`proprio` must be [D] or [1,D], got shape {tuple(proprio.shape)}")
+             if proprio.shape[1] != self.proprio_dim:
+                 raise ValueError(f"`proprio` last dim must be {self.proprio_dim}, got {proprio.shape[1]}")
+-            proprio = proprio.to(device=self.device, dtype=self.torch_dtype)
++            proprio = proprio.to(device=self.action_device, dtype=self.torch_dtype)
+ 
+         latent_t = (num_video_frames - 1) // self.vae.temporal_downsample_factor + 1
+         latent_h = height // self.vae.upsampling_factor
+@@ -862,10 +997,13 @@ class FastWAM(torch.nn.Module):
+             generator=action_generator,
+             device=rand_device,
+             dtype=torch.float32,
+-        ).to(device=self.device, dtype=self.torch_dtype)
++        ).to(device=self.action_device, dtype=self.torch_dtype)
+ 
+-        input_image = input_image.to(device=self.device, dtype=self.torch_dtype)
++        input_image = input_image.to(device=self.vae_device, dtype=self.torch_dtype)
+         first_frame_latents = self._encode_input_image_latents_tensor(input_image=input_image, tiled=tiled)
++        first_frame_latents = first_frame_latents.to(
++            device=self.video_device, dtype=self.torch_dtype, non_blocking=True
++        )
+         latents_video[:, :, 0:1] = first_frame_latents.clone()
+         fuse_flag = bool(getattr(self.video_expert, "fuse_vae_embedding_in_latents", False))
+ 
+@@ -877,7 +1015,9 @@ class FastWAM(torch.nn.Module):
+             raise ValueError("Either `prompt` or both `context/context_mask` must be provided.")
+ 
+         if use_prompt:
+-            context, context_mask = self.encode_prompt(prompt)
++            context, context_mask = self.encode_prompt(
++                prompt, output_device=self.action_device
++            )
+         else:
+             if context is None or context_mask is None:
+                 raise ValueError("`context` and `context_mask` must be both provided together.")
+@@ -889,8 +1029,12 @@ class FastWAM(torch.nn.Module):
+                 raise ValueError(
+                     f"`context/context_mask` must be [B,L,D]/[B,L], got {tuple(context.shape)} and {tuple(context_mask.shape)}"
+                 )
+-            context = context.to(device=self.device, dtype=self.torch_dtype, non_blocking=True)
+-            context_mask = context_mask.to(device=self.device, dtype=torch.bool, non_blocking=True)
++            context = context.to(
++                device=self.action_device, dtype=self.torch_dtype, non_blocking=True
++            )
++            context_mask = context_mask.to(
++                device=self.action_device, dtype=torch.bool, non_blocking=True
++            )
+         if proprio is not None:
+             context, context_mask = self._append_proprio_to_context(
+                 context=context,
+@@ -898,13 +1042,22 @@ class FastWAM(torch.nn.Module):
+                 proprio=proprio,
+             )
+ 
++        context_action = context
++        context_mask_action = context_mask
++        context_video = context_action.to(
++            device=self.video_device, dtype=self.torch_dtype, non_blocking=True
++        )
++        context_mask_video = context_mask_action.to(
++            device=self.video_device, dtype=torch.bool, non_blocking=True
++        )
++
+         patch_t, patch_h, patch_w = (int(size) for size in self.video_expert.patch_size)
+         tokens_per_frame = (latent_h // patch_h) * (latent_w // patch_w)
+         joint_attention_mask = self._build_mot_attention_mask(
+             video_seq_len=(latent_t // patch_t) * tokens_per_frame,
+             action_seq_len=latents_action.shape[1],
+             video_tokens_per_frame=tokens_per_frame,
+-            device=self.device,
++            device=self.video_device,
+         )
+         if compile_action_infer:
+             if action is not None:
+@@ -994,6 +1147,10 @@ class FastWAM(torch.nn.Module):
+         compile_action_infer: bool = False,
+     ) -> dict[str, Any]:
+         self.eval()
++        require_multidevice_eager(
++            is_multi_device=self.is_multi_device,
++            compile_action_infer=compile_action_infer,
++        )
+         if str(getattr(self.video_expert, "video_attention_mask_mode", "")) != "first_frame_causal":
+             raise ValueError(
+                 "`infer_action` requires `video_attention_mask_mode='first_frame_causal'`."
+@@ -1021,7 +1178,7 @@ class FastWAM(torch.nn.Module):
+                 raise ValueError(f"`proprio` must be [D] or [1,D], got shape {tuple(proprio.shape)}")
+             if proprio.shape[1] != self.proprio_dim:
+                 raise ValueError(f"`proprio` last dim must be {self.proprio_dim}, got {proprio.shape[1]}")
+-            proprio = proprio.to(device=self.device, dtype=self.torch_dtype)
++            proprio = proprio.to(device=self.action_device, dtype=self.torch_dtype)
+ 
+         generator = None if seed is None else torch.Generator(device=rand_device).manual_seed(seed)
+         latents_action = torch.randn(
+@@ -1029,10 +1186,13 @@ class FastWAM(torch.nn.Module):
+             generator=generator,
+             device=rand_device,
+             dtype=torch.float32,
+-        ).to(device=self.device, dtype=self.torch_dtype)
++        ).to(device=self.action_device, dtype=self.torch_dtype)
+ 
+-        input_image = input_image.to(device=self.device, dtype=self.torch_dtype)
++        input_image = input_image.to(device=self.vae_device, dtype=self.torch_dtype)
+         first_frame_latents = self._encode_input_image_latents_tensor(input_image=input_image, tiled=tiled)
++        first_frame_latents = first_frame_latents.to(
++            device=self.video_device, dtype=self.torch_dtype, non_blocking=True
++        )
+         fuse_flag = bool(getattr(self.video_expert, "fuse_vae_embedding_in_latents", False))
+ 
+         use_prompt = prompt is not None
+@@ -1043,7 +1203,9 @@ class FastWAM(torch.nn.Module):
+             raise ValueError("Either `prompt` or both `context/context_mask` must be provided.")
+ 
+         if use_prompt:
+-            context, context_mask = self.encode_prompt(prompt)
++            context, context_mask = self.encode_prompt(
++                prompt, output_device=self.action_device
++            )
+         else:
+             if context is None or context_mask is None:
+                 raise ValueError("`context` and `context_mask` must be both provided together.")
+@@ -1055,8 +1217,12 @@ class FastWAM(torch.nn.Module):
+                 raise ValueError(
+                     f"`context/context_mask` must be [B,L,D]/[B,L], got {tuple(context.shape)} and {tuple(context_mask.shape)}"
+                 )
+-            context = context.to(device=self.device, dtype=self.torch_dtype, non_blocking=True)
+-            context_mask = context_mask.to(device=self.device, dtype=torch.bool, non_blocking=True)
++            context = context.to(
++                device=self.action_device, dtype=self.torch_dtype, non_blocking=True
++            )
++            context_mask = context_mask.to(
++                device=self.action_device, dtype=torch.bool, non_blocking=True
++            )
+         if proprio is not None:
+             context, context_mask = self._append_proprio_to_context(
+                 context=context,
+@@ -1064,10 +1230,19 @@ class FastWAM(torch.nn.Module):
+                 proprio=proprio,
+             )
+ 
++        context_action = context
++        context_mask_action = context_mask
++        context_video = context_action.to(
++            device=self.video_device, dtype=self.torch_dtype, non_blocking=True
++        )
++        context_mask_video = context_mask_action.to(
++            device=self.video_device, dtype=torch.bool, non_blocking=True
++        )
++
+         timestep_video = torch.zeros(
+             (first_frame_latents.shape[0],),
+             dtype=first_frame_latents.dtype,
+-            device=self.device,
++            device=self.video_device,
+         )
+         (
+             video_tokens,
+@@ -1083,8 +1258,8 @@ class FastWAM(torch.nn.Module):
+         ) = self.video_expert.prepare(
+             x=first_frame_latents,
+             timestep=timestep_video,
+-            context=context,
+-            context_mask=context_mask,
++            context=context_video,
++            context_mask=context_mask_video,
+             action=None,
+             fuse_vae_embedding_in_latents=fuse_flag,
+         )
+@@ -1130,22 +1305,31 @@ class FastWAM(torch.nn.Module):
+             video_cache_k = [cache.clone() for cache in video_cache_k]
+             video_cache_v = [cache.clone() for cache in video_cache_v]
+ 
++        if self.video_device != self.action_device:
++            video_cache_k = move_tensor_sequence(video_cache_k, self.action_device)
++            video_cache_v = move_tensor_sequence(video_cache_v, self.action_device)
++            action_attention_mask = action_attention_mask.to(
++                device=self.action_device, non_blocking=True
++            )
++
+         infer_timesteps_action, infer_deltas_action = self.infer_action_scheduler.build_inference_schedule(
+             num_inference_steps=num_inference_steps,
+-            device=self.device,
++            device=self.action_device,
+             dtype=latents_action.dtype,
+             shift_override=sigma_shift,
+         )
+         for step_t_action, step_delta_action in zip(infer_timesteps_action, infer_deltas_action):
+             if compile_action_infer:
+                 torch.compiler.cudagraph_mark_step_begin()
+-            timestep_action = step_t_action.unsqueeze(0).to(dtype=latents_action.dtype, device=self.device)
++            timestep_action = step_t_action.unsqueeze(0).to(
++                dtype=latents_action.dtype, device=self.action_device
++            )
+ 
+             pred_action_posi = denoise_action_with_video_cache(
+                 latents_action=latents_action,
+                 timestep_action=timestep_action,
+-                context=context,
+-                context_mask=context_mask,
++                context=context_action,
++                context_mask=context_mask_action,
+                 video_cache_k=video_cache_k,
+                 video_cache_v=video_cache_v,
+                 action_attention_mask=action_attention_mask,
+diff --git a/src/fastwam/models/wan22/fastwam_idm.py b/src/fastwam/models/wan22/fastwam_idm.py
+index bddb385..fcb465a 100644
+--- a/src/fastwam/models/wan22/fastwam_idm.py
++++ b/src/fastwam/models/wan22/fastwam_idm.py
+@@ -6,6 +6,7 @@ import torch.nn.functional as F
+ from fastwam.utils.logging_config import get_logger
+ 
+ from .fastwam_joint import FastWAMJoint
++from .device_placement import move_tensor_sequence, require_multidevice_eager
+ 
+ logger = get_logger(__name__)
+ 
+@@ -98,14 +99,14 @@ class FastWAMIDM(FastWAMJoint):
+         )
+         (
+             cond_video_tokens,
+-            _t_video_cond,
++            _,
+             t_mod_video_cond,
+-            _context_video_cond,
++            _,
+             context_mask_video_cond,
+             freqs_video_cond,
+-            _f_cond,
+-            _h_cond,
+-            _w_cond,
++            _,
++            _,
++            _,
+             cond_video_tokens_per_frame,
+         ) = self.video_expert.prepare(
+             x=latents_cond,
+@@ -117,7 +118,7 @@ class FastWAMIDM(FastWAMJoint):
+         )
+         (
+             action_tokens,
+-            _t_action,
++            _,
+             t_mod_action,
+             context_action,
+             context_mask_action,
+@@ -380,8 +381,14 @@ class FastWAMIDM(FastWAMJoint):
+         tiled: bool = False,
+         compile_action_infer: bool = False,
+     ) -> dict[str, Any]:
++        require_multidevice_eager(
++            is_multi_device=self.is_multi_device,
++            compile_action_infer=compile_action_infer,
++        )
+         del negative_prompt, text_cfg_scale
+         self.eval()
++        video_device = self.video_device
++        action_device = self.action_device
+ 
+         if input_image.ndim == 3:
+             input_image = input_image.unsqueeze(0)
+@@ -411,7 +418,7 @@ class FastWAMIDM(FastWAMJoint):
+                 raise ValueError(f"`proprio` must be [D] or [1,D], got shape {tuple(proprio.shape)}")
+             if proprio.shape[1] != self.proprio_dim:
+                 raise ValueError(f"`proprio` last dim must be {self.proprio_dim}, got {proprio.shape[1]}")
+-            proprio = proprio.to(device=self.device, dtype=self.torch_dtype)
++            proprio = proprio.to(device=action_device, dtype=self.torch_dtype)
+ 
+         latent_t = (num_video_frames - 1) // self.vae.temporal_downsample_factor + 1
+         latent_h = height // self.vae.upsampling_factor
+@@ -424,16 +431,19 @@ class FastWAMIDM(FastWAMJoint):
+             generator=video_generator,
+             device=rand_device,
+             dtype=torch.float32,
+-        ).to(device=self.device, dtype=self.torch_dtype)
++        ).to(device=video_device, dtype=self.torch_dtype)
+         latents_action = torch.randn(
+             (1, action_horizon, self.action_expert.action_dim),
+             generator=action_generator,
+             device=rand_device,
+             dtype=torch.float32,
+-        ).to(device=self.device, dtype=self.torch_dtype)
++        ).to(device=action_device, dtype=self.torch_dtype)
+ 
+-        input_image = input_image.to(device=self.device, dtype=self.torch_dtype)
++        input_image = input_image.to(device=self.vae_device, dtype=self.torch_dtype)
+         first_frame_latents = self._encode_input_image_latents_tensor(input_image=input_image, tiled=tiled)
++        first_frame_latents = first_frame_latents.to(
++            device=video_device, dtype=self.torch_dtype, non_blocking=True
++        )
+         latents_video[:, :, 0:1] = first_frame_latents.clone()
+         fuse_flag = bool(getattr(self.video_expert, "fuse_vae_embedding_in_latents", False))
+ 
+@@ -445,7 +455,9 @@ class FastWAMIDM(FastWAMJoint):
+             raise ValueError("Either `prompt` or both `context/context_mask` must be provided.")
+ 
+         if use_prompt:
+-            context, context_mask = self.encode_prompt(prompt)
++            context, context_mask = self.encode_prompt(
++                prompt, output_device=action_device
++            )
+         else:
+             if context is None or context_mask is None:
+                 raise ValueError("`context` and `context_mask` must be both provided together.")
+@@ -457,14 +469,24 @@ class FastWAMIDM(FastWAMJoint):
+                 raise ValueError(
+                     f"`context/context_mask` must be [B,L,D]/[B,L], got {tuple(context.shape)} and {tuple(context_mask.shape)}"
+                 )
+-            context = context.to(device=self.device, dtype=self.torch_dtype, non_blocking=True)
+-            context_mask = context_mask.to(device=self.device, dtype=torch.bool, non_blocking=True)
++            context = context.to(
++                device=action_device, dtype=self.torch_dtype, non_blocking=True
++            )
++            context_mask = context_mask.to(
++                device=action_device, dtype=torch.bool, non_blocking=True
++            )
+         if proprio is not None:
+             context, context_mask = self._append_proprio_to_context(
+                 context=context,
+                 context_mask=context_mask,
+                 proprio=proprio,
+             )
++        context_video = context.to(
++            device=video_device, dtype=self.torch_dtype, non_blocking=True
++        )
++        context_mask_video = context_mask.to(
++            device=video_device, dtype=torch.bool, non_blocking=True
++        )
+ 
+         patch_t, patch_h, patch_w = (int(value) for value in self.video_expert.patch_size)
+         video_tokens_per_frame = (latent_h // patch_h) * (latent_w // patch_w)
+@@ -472,7 +494,7 @@ class FastWAMIDM(FastWAMJoint):
+         video_self_attn_mask = self.video_expert.build_video_to_video_mask(
+             video_seq_len=video_seq_len,
+             video_tokens_per_frame=video_tokens_per_frame,
+-            device=self.device,
++            device=video_device,
+         )
+         if compile_action_infer:
+             if not hasattr(self, "_denoise_video_compiled"):
+@@ -487,17 +509,19 @@ class FastWAMIDM(FastWAMJoint):
+         # Stage 1: denoise video only.
+         infer_timesteps_video, infer_deltas_video = self.infer_video_scheduler.build_inference_schedule(
+             num_inference_steps=num_inference_steps,
+-            device=self.device,
++            device=video_device,
+             dtype=latents_video.dtype,
+             shift_override=sigma_shift,
+         )
+         for step_t_video, step_delta_video in zip(infer_timesteps_video, infer_deltas_video):
+-            timestep_video = step_t_video.unsqueeze(0).to(dtype=latents_video.dtype, device=self.device)
++            timestep_video = step_t_video.unsqueeze(0).to(
++                dtype=latents_video.dtype, device=video_device
++            )
+             pred_video = denoise_video(
+                 latents_video=latents_video,
+                 timestep_video=timestep_video,
+-                context=context,
+-                context_mask=context_mask,
++                context=context_video,
++                context_mask=context_mask_video,
+                 video_self_attn_mask=video_self_attn_mask,
+                 fuse_vae_embedding_in_latents=fuse_flag,
+             )
+@@ -506,24 +530,26 @@ class FastWAMIDM(FastWAMJoint):
+ 
+         # Stage 2: freeze denoised video as cond and denoise action via video K/V cache.
+         timestep_video_cond = torch.zeros(
+-            (latents_video.shape[0],), dtype=latents_video.dtype, device=self.device
++            (latents_video.shape[0],),
++            dtype=latents_video.dtype,
++            device=video_device,
+         )
+         (
+             video_cond_tokens,
+-            _t_video_cond,
++            _,
+             video_cond_t_mod,
+             video_cond_context,
+             video_cond_context_mask,
+             video_cond_freqs,
+-            _f_cond,
+-            _h_cond,
+-            _w_cond,
++            _,
++            _,
++            _,
+             video_tokens_per_frame,
+         ) = self.video_expert.prepare(
+             x=latents_video,
+             timestep=timestep_video_cond,
+-            context=context,
+-            context_mask=context_mask,
++            context=context_video,
++            context_mask=context_mask_video,
+             action=None,
+             fuse_vae_embedding_in_latents=fuse_flag,
+         )
+@@ -563,15 +589,23 @@ class FastWAMIDM(FastWAMJoint):
+         if compile_action_infer:
+             video_cache_k = [cache.clone() for cache in video_cache_k]
+             video_cache_v = [cache.clone() for cache in video_cache_v]
++        if video_device != action_device:
++            video_cache_k = move_tensor_sequence(video_cache_k, action_device)
++            video_cache_v = move_tensor_sequence(video_cache_v, action_device)
++            action_attention_mask = action_attention_mask.to(
++                device=action_device, non_blocking=True
++            )
+ 
+         infer_timesteps_action, infer_deltas_action = self.infer_action_scheduler.build_inference_schedule(
+             num_inference_steps=num_inference_steps,
+-            device=self.device,
++            device=action_device,
+             dtype=latents_action.dtype,
+             shift_override=sigma_shift,
+         )
+         for step_t_action, step_delta_action in zip(infer_timesteps_action, infer_deltas_action):
+-            timestep_action = step_t_action.unsqueeze(0).to(dtype=latents_action.dtype, device=self.device)
++            timestep_action = step_t_action.unsqueeze(0).to(
++                dtype=latents_action.dtype, device=action_device
++            )
+             pred_action = denoise_action_with_video_cache(
+                 latents_action=latents_action,
+                 timestep_action=timestep_action,
+diff --git a/src/fastwam/models/wan22/fastwam_joint.py b/src/fastwam/models/wan22/fastwam_joint.py
+index 66d2d59..937c923 100644
+--- a/src/fastwam/models/wan22/fastwam_joint.py
++++ b/src/fastwam/models/wan22/fastwam_joint.py
+@@ -5,6 +5,7 @@ import torch
+ from fastwam.utils.logging_config import get_logger
+ 
+ from .fastwam import FastWAM
++from .device_placement import reject_unsupported_multidevice_path
+ 
+ logger = get_logger(__name__)
+ 
+@@ -69,6 +70,9 @@ class FastWAMJoint(FastWAM):
+         test_action_with_infer_action: bool = True,
+         compile_action_infer: bool = False,
+     ) -> dict[str, Any]:
++        reject_unsupported_multidevice_path(
++            is_multi_device=self.is_multi_device, path="FastWAMJoint.infer_joint"
++        )
+         del compile_action_infer
+         if test_action_with_infer_action:
+             logger.warning(
+@@ -113,6 +117,9 @@ class FastWAMJoint(FastWAM):
+         tiled: bool = False,
+         compile_action_infer: bool = False,
+     ) -> dict[str, Any]:
++        reject_unsupported_multidevice_path(
++            is_multi_device=self.is_multi_device, path="FastWAMJoint.infer_action"
++        )
+         del compile_action_infer
+         self.eval()
+ 
+diff --git a/src/fastwam/models/wan22/helpers/loader.py b/src/fastwam/models/wan22/helpers/loader.py
+index 99d92ff..933b314 100644
+--- a/src/fastwam/models/wan22/helpers/loader.py
++++ b/src/fastwam/models/wan22/helpers/loader.py
+@@ -1,6 +1,6 @@
+ from dataclasses import dataclass
+ import inspect
+-from typing import Any
++from typing import Any, Sequence
+ 
+ import torch
+ import time
+@@ -140,6 +140,10 @@ def _resolve_configs(model_id: str, tokenizer_model_id: str, redirect_common_fil
+ 
+ def load_wan22_ti2v_5b_components(
+     device: str = "cuda",
++    video_device: str | None = None,
++    vae_device: str | None = None,
++    text_encoder_device: str | None = None,
++    text_encoder_devices: Sequence[str] | None = None,
+     torch_dtype: torch.dtype = torch.bfloat16,
+     model_id: str = "Wan-AI/Wan2.2-TI2V-5B",
+     tokenizer_model_id: str = "Wan-AI/Wan2.1-T2V-1.3B",
+@@ -149,7 +153,23 @@ def load_wan22_ti2v_5b_components(
+     skip_dit_load_from_pretrain: bool = False,
+     load_text_encoder: bool = True,
+ ):
+-    logger.info("Loading Wan2.2-TI2V-5B components...")
++    video_device = str(video_device or device)
++    vae_device = str(vae_device or device)
++    if text_encoder_device is not None and text_encoder_devices is not None:
++        raise ValueError(
++            "Set only one of `text_encoder_device` and `text_encoder_devices`."
++        )
++    if text_encoder_devices is None:
++        resolved_text_devices = (str(text_encoder_device or device),)
++    else:
++        resolved_text_devices = tuple(str(item) for item in text_encoder_devices)
++        WanTextEncoder.validate_partition_devices(resolved_text_devices)
++    logger.info(
++        "Loading Wan2.2-TI2V-5B components (video=%s, vae=%s, text=%s)...",
++        video_device,
++        vae_device,
++        resolved_text_devices,
++    )
+     start = time.time()
+ 
+     if dit_config is None:
+@@ -172,7 +192,9 @@ def load_wan22_ti2v_5b_components(
+             "Skipping pretrained video DiT load (`skip_dit_load_from_pretrain=True`); "
+             "initializing video expert randomly and expecting checkpoint override."
+         )
+-        dit: WanVideoDiT = WanVideoDiT(**validated_dit_config).to(device=device, dtype=torch_dtype)
++        dit: WanVideoDiT = WanVideoDiT(**validated_dit_config).to(
++            device=video_device, dtype=torch_dtype
++        )
+         dit_path = SKIPPED_PRETRAIN_SENTINEL
+     else:
+         dit_model_config.download_if_necessary()
+@@ -180,7 +202,7 @@ def load_wan22_ti2v_5b_components(
+             dit_model_config.path,
+             "wan_video_dit",
+             torch_dtype=torch_dtype,
+-            device=device,
++            device=video_device,
+             model_kwargs_override=validated_dit_config,
+         )
+         dit_path = str(dit_model_config.path)
+@@ -189,12 +211,23 @@ def load_wan22_ti2v_5b_components(
+     text_encoder_path: str | None = None
+     tokenizer_path: str | None = None
+     if load_text_encoder:
+-        text_encoder = _load_registered_model(
+-            text_config.path,
+-            "wan_video_text_encoder",
+-            torch_dtype=torch_dtype,
+-            device=device,
+-        )
++        if len(resolved_text_devices) == 2:
++            text_encoder = _load_registered_model(
++                text_config.path,
++                "wan_video_text_encoder",
++                torch_dtype=torch_dtype,
++                device="cpu",
++            )
++            text_encoder.partition_for_inference(
++                resolved_text_devices, torch_dtype=torch_dtype
++            )
++        else:
++            text_encoder = _load_registered_model(
++                text_config.path,
++                "wan_video_text_encoder",
++                torch_dtype=torch_dtype,
++                device=resolved_text_devices[0],
++            )
+         tokenizer = HuggingfaceTokenizer(
+             name=tokenizer_config.path,
+             seq_len=int(tokenizer_max_len),
+@@ -207,7 +240,12 @@ def load_wan22_ti2v_5b_components(
+             "Skipping pretrained text encoder/tokenizer load (`load_text_encoder=False`); "
+             "training must provide cached `context/context_mask`."
+         )
+-    vae: WanVideoVAE38 = _load_registered_model(vae_config.path, "wan_video_vae", torch_dtype=torch_dtype, device=device)
++    vae: WanVideoVAE38 = _load_registered_model(
++        vae_config.path,
++        "wan_video_vae",
++        torch_dtype=torch_dtype,
++        device=vae_device,
++    )
+     logger.info("Finished loading Wan2.2-TI2V-5B components in %.2f seconds.", time.time() - start)
+     return Wan22LoadedComponents(
+         dit=dit,
+diff --git a/src/fastwam/models/wan22/wan_video_text_encoder.py b/src/fastwam/models/wan22/wan_video_text_encoder.py
+index 24f89f4..dd143d0 100644
+--- a/src/fastwam/models/wan22/wan_video_text_encoder.py
++++ b/src/fastwam/models/wan22/wan_video_text_encoder.py
+@@ -5,6 +5,7 @@ import torch.nn.functional as F
+ from transformers import AutoTokenizer
+ import html
+ import string
++from collections.abc import Sequence
+ try:
+     import ftfy
+ except ModuleNotFoundError:
+@@ -257,12 +258,109 @@ class WanTextEncoder(torch.nn.Module):
+         # Verified: checkpoint fully covers this module (missing/unexpected keys are both 0).
+         # self.apply(init_weights)
+ 
++        self._inference_partition_devices: tuple[torch.device, torch.device] | None = None
++        self._inference_partition_split: int | None = None
++        self._inference_partition_offloaded = False
++
++    @staticmethod
++    def validate_partition_devices(
++        devices: Sequence[str | torch.device],
++    ) -> tuple[torch.device, torch.device]:
++        resolved = tuple(torch.device(device) for device in devices)
++        if len(resolved) != 2:
++            raise ValueError("Wan UMT5 partitioning requires exactly two devices.")
++        if resolved[0] == resolved[1]:
++            raise ValueError("Wan UMT5 partitioning requires two distinct devices.")
++        if any(device.type != "cuda" for device in resolved):
++            raise ValueError(
++                "Wan UMT5 partitioning is CUDA-only; CPU execution is not used as "
++                "a silent numerical fallback."
++            )
++        return resolved
++
++    def validate_partition_structure(self) -> None:
++        if self.shared_pos or self.pos_embedding is not None:
++            raise ValueError(
++                "Two-device partitioning supports the official Wan UMT5 structure "
++                "with shared_pos=False only."
++            )
++        if not isinstance(self.blocks, nn.ModuleList):
++            raise TypeError("Wan UMT5 `blocks` must be an nn.ModuleList.")
++        if len(self.blocks) != int(self.num_layers) or len(self.blocks) < 2:
++            raise ValueError(
++                "Wan UMT5 partitioning requires `len(blocks) == num_layers >= 2`."
++            )
++        for index, block in enumerate(self.blocks):
++            if bool(getattr(block, "shared_pos", True)):
++                raise ValueError(
++                    f"Wan UMT5 block {index} must use shared_pos=False."
++                )
++            if getattr(block, "pos_embedding", None) is None:
++                raise ValueError(
++                    f"Wan UMT5 block {index} is missing its relative position embedding."
++                )
++
++    def partition_for_inference(
++        self,
++        devices: Sequence[str | torch.device],
++        *,
++        torch_dtype: torch.dtype,
++    ) -> "WanTextEncoder":
++        first_device, second_device = self.validate_partition_devices(devices)
++        self.validate_partition_structure()
++        split = len(self.blocks) // 2
++
++        self.token_embedding.to(device=first_device, dtype=torch_dtype)
++        for index, block in enumerate(self.blocks):
++            target = first_device if index < split else second_device
++            block.to(device=target, dtype=torch_dtype)
++        self.norm.to(device=second_device, dtype=torch_dtype)
++
++        self._inference_partition_devices = (first_device, second_device)
++        self._inference_partition_split = split
++        self._inference_partition_offloaded = False
++        return self
++
++    def offload_inference_partition(self) -> None:
++        if self._inference_partition_devices is None:
++            raise RuntimeError("Wan UMT5 is not configured as a two-device partition.")
++        partition_devices = self._inference_partition_devices
++        self.to(device="cpu")
++        self._inference_partition_devices = None
++        self._inference_partition_split = None
++        self._inference_partition_offloaded = True
++        for device in partition_devices:
++            with torch.cuda.device(device):
++                torch.cuda.empty_cache()
++
+     def forward(self, ids, mask=None):
++        if self._inference_partition_offloaded:
++            raise RuntimeError(
++                "Wan UMT5 was offloaded after prompt pre-encoding. A cache miss must "
++                "fail instead of silently running UMT5 on CPU."
++            )
++        partition = self._inference_partition_devices
++        if partition is not None:
++            if self._inference_partition_split is None:
++                raise RuntimeError("Wan UMT5 partition metadata is incomplete.")
++            ids = ids.to(partition[0])
++            if mask is not None:
++                mask = mask.to(partition[0])
+         x = self.token_embedding(ids)
+         x = self.dropout(x)
+         e = self.pos_embedding(x.size(1),
+                                x.size(1)) if self.shared_pos else None
+-        for block in self.blocks:
++        for index, block in enumerate(self.blocks):
++            if partition is not None:
++                target = (
++                    partition[0]
++                    if index < self._inference_partition_split
++                    else partition[1]
++                )
++                if x.device != target:
++                    x = x.to(target)
++                    if mask is not None:
++                        mask = mask.to(target)
+             x = block(x, mask, pos_bias=e)
+         x = self.norm(x)
+         x = self.dropout(x)
+diff --git a/src/fastwam/runtime.py b/src/fastwam/runtime.py
+index e521dda..7f1adab 100644
+--- a/src/fastwam/runtime.py
++++ b/src/fastwam/runtime.py
+@@ -2,6 +2,7 @@ import logging
+ import os
+ import inspect
+ from pathlib import Path
++from collections.abc import Sequence
+ 
+ import torch
+ from hydra.utils import instantiate
+@@ -19,6 +20,27 @@ from .utils import misc
+ logger = get_logger(__name__)
+ 
+ 
++def _uses_multiple_component_devices(
++    device: str,
++    video_device: str | None,
++    action_device: str | None,
++    vae_device: str | None,
++    text_encoder_device: str | None,
++    text_encoder_devices: Sequence[str] | None = None,
++) -> bool:
++    resolved = {
++        str(value or device)
++        for value in (
++            video_device,
++            action_device,
++            vae_device,
++            text_encoder_device,
++            *(text_encoder_devices or ()),
++        )
++    }
++    return len(resolved) > 1
++
++
+ def _normalize_mixed_precision(mixed_precision: str) -> str:
+     if not isinstance(mixed_precision, str):
+         raise ValueError(f"`mixed_precision` must be str, got {type(mixed_precision)}")
+@@ -91,6 +113,11 @@ def create_fastwam(
+     redirect_common_files: bool = True,
+     model_dtype: torch.dtype = torch.bfloat16,
+     device: str = "cuda",
++    video_device: str | None = None,
++    action_device: str | None = None,
++    vae_device: str | None = None,
++    text_encoder_device: str | None = None,
++    text_encoder_devices: Sequence[str] | None = None,
+ ):
+     from .models.wan22.fastwam import FastWAM
+ 
+@@ -136,6 +163,11 @@ def create_fastwam(
+ 
+     return FastWAM.from_wan22_pretrained(
+         device=device,
++        video_device=video_device,
++        action_device=action_device,
++        vae_device=vae_device,
++        text_encoder_device=text_encoder_device,
++        text_encoder_devices=text_encoder_devices,
+         torch_dtype=model_dtype,
+         model_id=model_id,
+         tokenizer_model_id=tokenizer_model_id,
+@@ -177,7 +209,24 @@ def create_fastwam_joint(
+     redirect_common_files: bool = True,
+     model_dtype: torch.dtype = torch.bfloat16,
+     device: str = "cuda",
++    video_device: str | None = None,
++    action_device: str | None = None,
++    vae_device: str | None = None,
++    text_encoder_device: str | None = None,
++    text_encoder_devices: Sequence[str] | None = None,
+ ):
++    if _uses_multiple_component_devices(
++        device,
++        video_device,
++        action_device,
++        vae_device,
++        text_encoder_device,
++        text_encoder_devices,
++    ):
++        raise NotImplementedError(
++            "Multi-device FastWAMJoint is not implemented; only the base/Optional "
++            "first-frame action path is supported."
++        )
+     from .models.wan22.fastwam_joint import FastWAMJoint
+ 
+     if isinstance(video_dit_config, DictConfig):
+@@ -264,7 +313,24 @@ def create_fastwam_idm(
+     redirect_common_files: bool = True,
+     model_dtype: torch.dtype = torch.bfloat16,
+     device: str = "cuda",
++    video_device: str | None = None,
++    action_device: str | None = None,
++    vae_device: str | None = None,
++    text_encoder_device: str | None = None,
++    text_encoder_devices: Sequence[str] | None = None,
+ ):
++    if _uses_multiple_component_devices(
++        device,
++        video_device,
++        action_device,
++        vae_device,
++        text_encoder_device,
++        text_encoder_devices,
++    ):
++        raise NotImplementedError(
++            "Multi-device FastWAMIDM is not implemented; only the base/Optional "
++            "first-frame action path is supported."
++        )
+     from .models.wan22.fastwam_idm import (
+         FastWAMIDM,
+     )
+@@ -356,6 +422,11 @@ def create_fastwam_optional_idm(
+     redirect_common_files: bool = True,
+     model_dtype: torch.dtype = torch.bfloat16,
+     device: str = "cuda",
++    video_device: str | None = None,
++    action_device: str | None = None,
++    vae_device: str | None = None,
++    text_encoder_device: str | None = None,
++    text_encoder_devices: Sequence[str] | None = None,
+ ):
+     from .models.wan22.fastwam_optional_idm import FastWAMOptionalIDM
+ 
+@@ -401,6 +472,11 @@ def create_fastwam_optional_idm(
+ 
+     return FastWAMOptionalIDM.from_wan22_pretrained(
+         device=device,
++        video_device=video_device,
++        action_device=action_device,
++        vae_device=vae_device,
++        text_encoder_device=text_encoder_device,
++        text_encoder_devices=text_encoder_devices,
+         torch_dtype=model_dtype,
+         model_id=model_id,
+         tokenizer_model_id=tokenizer_model_id,
+diff --git a/tests/test_multigpu_placement.py b/tests/test_multigpu_placement.py
+new file mode 100644
+index 0000000..97384ee
+--- /dev/null
++++ b/tests/test_multigpu_placement.py
+@@ -0,0 +1,251 @@
++import logging
++import sys
++import types
++import unittest
++from unittest.mock import patch
++
++import torch
++import torch.nn as nn
++
++
++def _install_lightweight_import_stubs() -> None:
++    einops = types.ModuleType("einops")
++    einops.rearrange = lambda value, *_args, **_kwargs: value
++    einops.repeat = lambda value, *_args, **_kwargs: value
++    sys.modules.setdefault("einops", einops)
++
++    logging_config = types.ModuleType("fastwam.utils.logging_config")
++    logging_config.get_logger = logging.getLogger
++    logging_config.setup_logging = lambda *_args, **_kwargs: None
++    sys.modules["fastwam.utils.logging_config"] = logging_config
++
++    loader = types.ModuleType("fastwam.models.wan22.helpers.loader")
++    loader.load_wan22_ti2v_5b_components = lambda **_kwargs: None
++    sys.modules["fastwam.models.wan22.helpers.loader"] = loader
++
++    transformers = types.ModuleType("transformers")
++    transformers.AutoTokenizer = object
++    sys.modules.setdefault("transformers", transformers)
++
++
++_install_lightweight_import_stubs()
++
++from fastwam.models.wan22.device_placement import (  # noqa: E402
++    move_tensor_sequence,
++    reject_unsupported_multidevice_path,
++    require_multidevice_eager,
++    resolve_component_devices,
++)
++from fastwam.models.wan22.fastwam import FastWAM  # noqa: E402
++from fastwam.models.wan22.fastwam_joint import FastWAMJoint  # noqa: E402
++from fastwam.models.wan22.fastwam_idm import FastWAMIDM  # noqa: E402
++from fastwam.models.wan22.fastwam_optional_idm import FastWAMOptionalIDM  # noqa: E402
++from fastwam.models.wan22.wan_video_text_encoder import WanTextEncoder  # noqa: E402
++
++
++class _CountingTextEncoder(nn.Module):
++    def __init__(self):
++        super().__init__()
++        self.calls = 0
++
++    def forward(self, ids, mask):
++        self.calls += 1
++        return ids.to(torch.float32).unsqueeze(-1).expand(-1, -1, 4).clone()
++
++
++class _Tokenizer:
++    def __call__(self, _prompt, **_kwargs):
++        return torch.tensor([[1, 2, 0]]), torch.tensor([[1, 1, 0]])
++
++
++def _bare_fastwam(cls=FastWAM, *, multi_device: bool):
++    model = cls.__new__(cls)
++    nn.Module.__init__(model)
++    model.is_multi_device = multi_device
++    model.mot = nn.Identity()
++    model.vae = nn.Identity()
++    model.text_encoder = None
++    model._text_encoder_offloaded = False
++    return model
++
++
++class ComponentPlacementTest(unittest.TestCase):
++    def test_single_device_defaults_are_backward_compatible(self):
++        placement = resolve_component_devices("cpu")
++        self.assertFalse(placement.is_multi_device)
++        self.assertEqual(placement.video, torch.device("cpu"))
++        self.assertEqual(placement.action, torch.device("cpu"))
++        self.assertEqual(placement.vae, torch.device("cpu"))
++        self.assertEqual(placement.text, (torch.device("cpu"),))
++
++        model = _bare_fastwam(multi_device=False)
++        self.assertIs(model.to("cpu"), model)
++
++    def test_explicit_component_devices_enable_multidevice_mode(self):
++        placement = resolve_component_devices(
++            "cpu", video_device="meta", action_device="cpu", vae_device="cpu"
++        )
++        self.assertTrue(placement.is_multi_device)
++        self.assertEqual(placement.video, torch.device("meta"))
++
++    def test_text_partition_config_is_explicit_and_unambiguous(self):
++        placement = resolve_component_devices(
++            "cpu", text_encoder_devices=["cuda:2", "cuda:3"]
++        )
++        self.assertEqual(
++            placement.text, (torch.device("cuda:2"), torch.device("cuda:3"))
++        )
++        with self.assertRaisesRegex(ValueError, "only one"):
++            resolve_component_devices(
++                "cpu",
++                text_encoder_device="cuda:2",
++                text_encoder_devices=["cuda:2", "cuda:3"],
++            )
++        with self.assertRaisesRegex(ValueError, "exactly two"):
++            resolve_component_devices("cpu", text_encoder_devices=["cuda:2"])
++
++    def test_blanket_to_is_rejected_for_multidevice_model(self):
++        model = _bare_fastwam(multi_device=True)
++        with self.assertRaisesRegex(RuntimeError, "whole-model"):
++            model.to("cpu")
++
++    def test_kv_sequence_moves_to_consumer_device(self):
++        source = [torch.ones(2), torch.zeros(3)]
++        moved = move_tensor_sequence(source, "meta")
++        self.assertEqual([item.device.type for item in moved], ["meta", "meta"])
++        self.assertEqual([tuple(item.shape) for item in moved], [(2,), (3,)])
++
++    def test_compile_guard_applies_only_to_multidevice(self):
++        require_multidevice_eager(
++            is_multi_device=False, compile_action_infer=True
++        )
++        with self.assertRaisesRegex(ValueError, "compile_action_infer=False"):
++            require_multidevice_eager(
++                is_multi_device=True, compile_action_infer=True
++            )
++
++    def test_unsupported_multidevice_path_is_explicit(self):
++        with self.assertRaisesRegex(NotImplementedError, "first_frame"):
++            reject_unsupported_multidevice_path(
++                is_multi_device=True, path="FastWAMJoint.infer_action"
++            )
++
++
++class PromptCacheAndModeTest(unittest.TestCase):
++    def test_prompt_cache_reuses_encoder_output(self):
++        model = _bare_fastwam(multi_device=False)
++        model.device = torch.device("cpu")
++        model.action_device = torch.device("cpu")
++        model.text_encoder_device = torch.device("cpu")
++        model.torch_dtype = torch.float32
++        model.tokenizer = _Tokenizer()
++        model.text_encoder = _CountingTextEncoder()
++        model._prompt_context_cache = {}
++        model.text_encoder_devices = (torch.device("cpu"),)
++
++        first = model.encode_prompt("pick the cup")
++        second = model.encode_prompt("pick the cup")
++
++        self.assertEqual(model.text_encoder.calls, 1)
++        self.assertTrue(torch.equal(first[0], second[0]))
++        self.assertTrue(torch.equal(first[1], second[1]))
++        self.assertEqual(first[0].device.type, "cpu")
++
++    def test_preencode_then_offload_allows_hits_and_rejects_misses(self):
++        model = _bare_fastwam(multi_device=False)
++        model.device = torch.device("cpu")
++        model.action_device = torch.device("cpu")
++        model.text_encoder_device = torch.device("cpu")
++        model.text_encoder_devices = (torch.device("cpu"),)
++        model.torch_dtype = torch.float32
++        model.tokenizer = _Tokenizer()
++        model.text_encoder = _CountingTextEncoder()
++        model._prompt_context_cache = {}
++
++        model.preencode_prompts(["task a", "task a"], offload_text_encoder=True)
++        self.assertTrue(model._text_encoder_offloaded)
++        self.assertEqual(model.text_encoder.calls, 1)
++        model.encode_prompt("task a")
++        with self.assertRaisesRegex(RuntimeError, "cache miss"):
++            model.encode_prompt("task b")
++
++    def test_base_multidevice_compile_guard_fires_before_tensor_work(self):
++        model = _bare_fastwam(multi_device=True)
++        with self.assertRaisesRegex(ValueError, "compile_action_infer=False"):
++            model.infer_action(
++                prompt=None,
++                input_image=None,
++                action_horizon=1,
++                compile_action_infer=True,
++            )
++
++
++class WanTextEncoderPartitionTest(unittest.TestCase):
++    @staticmethod
++    def _tiny_encoder(*, shared_pos=False):
++        return WanTextEncoder(
++            vocab=16,
++            dim=4,
++            dim_attn=4,
++            dim_ffn=8,
++            num_heads=2,
++            num_layers=2,
++            num_buckets=4,
++            shared_pos=shared_pos,
++            dropout=0.0,
++        )
++
++    def test_official_unshared_position_structure_is_accepted(self):
++        encoder = self._tiny_encoder(shared_pos=False)
++        encoder.validate_partition_structure()
++        devices = encoder.validate_partition_devices(["cuda:2", "cuda:3"])
++        self.assertEqual(devices, (torch.device("cuda:2"), torch.device("cuda:3")))
++
++    def test_shared_position_structure_is_rejected(self):
++        encoder = self._tiny_encoder(shared_pos=True)
++        with self.assertRaisesRegex(ValueError, "shared_pos=False"):
++            encoder.validate_partition_structure()
++
++    def test_partition_requires_two_distinct_cuda_devices(self):
++        encoder = self._tiny_encoder()
++        with self.assertRaisesRegex(ValueError, "distinct"):
++            encoder.validate_partition_devices(["cuda:2", "cuda:2"])
++        with self.assertRaisesRegex(ValueError, "CUDA-only"):
++            encoder.validate_partition_devices(["cpu", "cuda:2"])
++
++    def test_joint_multidevice_path_fails_fast(self):
++        model = _bare_fastwam(FastWAMJoint, multi_device=True)
++        with self.assertRaisesRegex(NotImplementedError, "first_frame"):
++            model.infer_action(
++                prompt=None,
++                input_image=None,
++                action_horizon=1,
++                num_video_frames=1,
++            )
++
++    def test_optional_idm_routes_multidevice_idm_and_uses_base_guard(self):
++        model = _bare_fastwam(FastWAMOptionalIDM, multi_device=True)
++        with patch.object(
++            FastWAMIDM, "infer_action", return_value={"action": torch.zeros(1, 1)}
++        ) as infer_idm:
++            model.infer_action(
++                prompt=None,
++                input_image=torch.zeros(1, 3, 16, 16),
++                action_horizon=1,
++                num_video_frames=5,
++                action_infer_mode="idm",
++            )
++        infer_idm.assert_called_once()
++        with self.assertRaisesRegex(ValueError, "compile_action_infer=False"):
++            model.infer_action(
++                prompt=None,
++                input_image=None,
++                action_horizon=1,
++                num_video_frames=1,
++                action_infer_mode="first_frame",
++                compile_action_infer=True,
++            )
++
++
++if __name__ == "__main__":
++    unittest.main()
+diff --git a/tests/test_worker_launch.py b/tests/test_worker_launch.py
+new file mode 100644
+index 0000000..685cd4b
+--- /dev/null
++++ b/tests/test_worker_launch.py
+@@ -0,0 +1,117 @@
++import unittest
++
++from experiments.libero.worker_launch import resolve_worker_launches
++
++
++class WorkerLaunchTest(unittest.TestCase):
++    def test_default_preserves_one_worker_per_visible_gpu(self):
++        launches = resolve_worker_launches(
++            num_gpus=2,
++            gpu_groups=None,
++            cuda_visible_devices="4,7,9",
++        )
++
++        self.assertEqual([launch.physical_gpus for launch in launches], [("4",), ("7",)])
++        self.assertEqual([launch.worker_id for launch in launches], ["4", "7"])
++        self.assertEqual([launch.component_overrides for launch in launches], [(), ()])
++
++    def test_explicit_groups_map_physical_to_logical_component_devices(self):
++        launches = resolve_worker_launches(
++            num_gpus=8,
++            gpu_groups=[[0, 1, 2, 3], [4, 5, 6, 7]],
++            cuda_visible_devices=None,
++        )
++
++        self.assertEqual(
++            [launch.cuda_visible_devices for launch in launches],
++            ["0,1,2,3", "4,5,6,7"],
++        )
++        command = launches[0].build_command(
++            python_executable="python",
++            config_name="sim_libero",
++            task_choice="task_config",
++            ckpt="checkpoint",
++            num_trials=3,
++            output_dir="results",
++            extra_overrides=["seed=7", "EVALUATION.compile_action_infer=false"],
++        )
++        self.assertIn("gpu_id=0", command)
++        self.assertIn("seed=7", command)
++        self.assertIn("EVALUATION.device=cuda:0", command)
++        self.assertIn("EVALUATION.video_device=cuda:0", command)
++        self.assertIn("EVALUATION.action_device=cuda:1", command)
++        self.assertIn("EVALUATION.vae_device=cuda:1", command)
++        self.assertIn("EVALUATION.text_encoder_devices=[cuda:2,cuda:3]", command)
++        self.assertEqual(command.count("EVALUATION.compile_action_infer=false"), 1)
++
++    def test_environment_records_physical_group_and_preserves_base(self):
++        launch = resolve_worker_launches(
++            num_gpus=4,
++            gpu_groups=[[0, 1, 2, 3]],
++            cuda_visible_devices=None,
++        )[0]
++        environment = launch.build_environment(
++            base_environment={"PATH": "/bin", "CUDA_VISIBLE_DEVICES": "old"},
++            pending_file="pending",
++            lock_file="lock",
++            stop_file="stop",
++            status_dir="status",
++            failed_file="failed",
++        )
++
++        self.assertEqual(environment["PATH"], "/bin")
++        self.assertEqual(environment["CUDA_VISIBLE_DEVICES"], "0,1,2,3")
++        self.assertEqual(environment["LIBERO_WORKER_ID"], "group_0-1-2-3")
++        self.assertEqual(environment["LIBERO_WORKER_PHYSICAL_GPUS"], "0,1,2,3")
++        self.assertEqual(environment["LIBERO_WORKER_PENDING_FILE"], "pending")
++
++    def test_invalid_group_definitions_fail_fast(self):
++        invalid_cases = (
++            ([], ValueError),
++            ([[]], ValueError),
++            ([[0, 1, 2]], ValueError),
++            ([[0, 1, 2, 2]], ValueError),
++            ([[0, 1, 2, 3], [3, 4, 5, 6]], ValueError),
++            ([[0, 1, 2, 8]], ValueError),
++            ([[0, 1, 2, True]], TypeError),
++            ([[0, 1, 2, "gpu3"]], TypeError),
++            ("0,1,2,3", TypeError),
++        )
++        for gpu_groups, error_type in invalid_cases:
++            with self.subTest(gpu_groups=gpu_groups):
++                with self.assertRaises(error_type):
++                    resolve_worker_launches(
++                        num_gpus=8,
++                        gpu_groups=gpu_groups,
++                        cuda_visible_devices=None,
++                    )
++
++    def test_invalid_visible_gpu_list_and_conflicting_overrides_fail(self):
++        for visible in ("0,,2,3", "0,1,1,2"):
++            with self.subTest(visible=visible):
++                with self.assertRaises(ValueError):
++                    resolve_worker_launches(
++                        num_gpus=4,
++                        gpu_groups=None,
++                        cuda_visible_devices=visible,
++                    )
++
++        launch = resolve_worker_launches(
++            num_gpus=4,
++            gpu_groups=[[0, 1, 2, 3]],
++            cuda_visible_devices=None,
++        )[0]
++        with self.assertRaisesRegex(ValueError, "conflicting override"):
++            launch.build_command(
++                python_executable="python",
++                config_name="sim_libero",
++                task_choice="task_config",
++                ckpt="checkpoint",
++                num_trials=1,
++                output_dir="results",
++                extra_overrides=["EVALUATION.action_device=cuda:0"],
++            )
++
++
++if __name__ == "__main__":
++    unittest.main()
